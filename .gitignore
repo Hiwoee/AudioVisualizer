@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.csproj.user
+settings.ini
+*.log
+*.tmp
+*.cache
+*.zip
+*.7z
+*.rar
+Thumbs.db
+Desktop.ini
