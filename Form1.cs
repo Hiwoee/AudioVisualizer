@@ -1,6 +1,5 @@
 //notes ble ble bla bla
-//1.fix right side of visualizer berely reacting
-//2.fix wave mode
+//1.fix wave mode
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using NAudio.Dsp;
@@ -284,9 +283,10 @@ public sealed class VisualizerForm : Form
 
         int   barCount   = Math.Max(1, settings.BarCount);
         float sampleRate = _capture?.WaveFormat.SampleRate ?? 44100f;
-        float nyquist    = sampleRate / 2f;
-        float melMin     = HzToMel(20f);
-        float melMax     = HzToMel(nyquist);
+        float nyquist = sampleRate / 2f;
+        float displayMaxHz = Math.Min(12500f, nyquist);
+        float melMin = HzToMel(20f);
+        float melMax = HzToMel(displayMaxHz);
         float tDivisor   = Math.Max(1, barCount - 1);
 
         for (int i = 0; i < barCount; i++)
@@ -308,10 +308,11 @@ public sealed class VisualizerForm : Form
             float final      = MathF.Pow(normalized, 0.6f);
 
             float t         = (float)i / tDivisor;
-            float lowBoost  = 1.2f;
-            float midDip    = 0.85f + 0.3f * MathF.Sin(t * MathF.PI);
-            float highBoost = 0.8f + t * 0.9f;
-            float gain      = lowBoost * midDip * highBoost;
+            float lowBoost  = 1.15f;
+            float midShape  = 0.95f + 0.15f * MathF.Sin(t * MathF.PI);
+            float highBoost = 1.0f + t * 1.4f;
+
+            float gain = lowBoost * midShape * highBoost;
 
             final *= gain;
             final *= 0.97f + 0.03f * MathF.Sin(i * 0.2f + _vuSmoothed * 5f);
