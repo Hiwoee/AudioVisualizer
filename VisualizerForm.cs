@@ -1,7 +1,8 @@
-//notes ble ble bla bla
-//1.fix wave mode
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Dsp;
 using NAudio.Wave;
 using Windows.Media.Control;
@@ -36,37 +37,23 @@ public sealed class VisualizerForm : Form
     private readonly Complex[] _fftComplex = new Complex[FftSize];
     private readonly float[]   _magnitudes = new float[FftSize / 2];
     private          int       _fftWritePos;
+    private          long      _lastAudioTick;
+
+    private static readonly float[] HannWindow = BuildHannWindow();
+
+    private static float[] BuildHannWindow()
+    {
+        var w = new float[FftSize];
+        for (int i = 0; i < FftSize; i++)
+            w[i] = (float)(0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1))));
+        return w;
+    }
 
     private float[] _smoothedLevels;
     private float[] _peakLevels;
     private float[] _rawTargets;
 
-    private float _vuSmoothed;
     private float _dynamicCeiling = 0.01f;
-
-    private static readonly float[] VuVariations = BuildVuVariations(1000);
-
-    private static float[] BuildVuVariations(int count)
-    {
-        var rng = new Random(1234);
-        var v   = new float[count];
-        for (int i = 0; i < count; i++)
-            v[i] = 0.92f + (float)rng.NextDouble() * 0.16f;
-        return v;
-    }
-
-    private string _activeMode;
-
-    private static readonly (string Name, Color Value)[] ColorPresets =
-    {
-        ("Purple", Color.FromArgb(210, 138,  43, 226)),
-        ("Orange", Color.FromArgb(210, 220,  80,  30)),
-        ("Green",  Color.FromArgb(210,  30, 180,  80)),
-        ("Pink",   Color.FromArgb(210, 200,  40,  80)),
-        ("Blue",   Color.FromArgb(210,  50, 120, 220)),
-        ("White",  Color.FromArgb(180, 210, 210, 210)),
-    };
-    private int _presetIndex;
 
     private float  _marqueeOffset;
     private float  _marqueeWait;
@@ -91,21 +78,25 @@ public sealed class VisualizerForm : Form
     private bool               _stayOnTop;
     private SolidBrush         _barBrush;
 
-    private WasapiLoopbackCapture? _capture;
+    private WasapiLoopbackCapture?       _capture;
+    private readonly MMDeviceEnumerator  _deviceEnumerator = new();
+    private readonly DefaultDeviceWatcher _deviceWatcher;
 
     private NotifyIcon?                         _trayIcon;
-    private ToolStripMenuItem?                  _modeMenuItem;
-    private ToolStripMenuItem?                  _presetMenuItem;
     private readonly FileSystemWatcher          _settingsWatcher;
+    private readonly System.Windows.Forms.Timer _reloadDebounce = new() { Interval = 250 };
     private System.Windows.Forms.Timer?         _renderTimer;
     private readonly System.Windows.Forms.Timer _mediaTimer;
+
+    private GlobalSystemMediaTransportControlsSessionManager? _mediaManager;
+    private bool _isRefreshingMedia;
+    private bool _isPlaying;
 
     private readonly Font  _mediaFont = new("Segoe UI", 10, FontStyle.Bold);
     private readonly Brush _peakBrush = Brushes.White;
     private readonly Brush _textBrush = Brushes.White;
 
     private MediaSnapshot _media = MediaSnapshot.Empty;
-    private bool          _isReloadPending;
     private bool          _isDisposed;
 
     public VisualizerForm(VisualizerSettings settings, string settingsPath)
@@ -114,7 +105,6 @@ public sealed class VisualizerForm : Form
         _settingsPath = settingsPath;
         _stayOnTop    = _settings.Stayontop;
         _barBrush     = new SolidBrush(_settings.BarColor);
-        _activeMode   = _settings.Mode;
 
         DoubleBuffered = true;
         SetStyle(
@@ -150,6 +140,13 @@ public sealed class VisualizerForm : Form
             EnableRaisingEvents = true
         };
         _settingsWatcher.Changed += OnSettingsFileChanged;
+        _reloadDebounce.Tick += (_, _) => { _reloadDebounce.Stop(); ReloadSettings(); };
+
+        _deviceWatcher = new DefaultDeviceWatcher(() =>
+        {
+            if (!_isDisposed && IsHandleCreated) BeginInvoke(new Action(RestartAudio));
+        });
+        _deviceEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
 
         SetupAudio();
         SetupRenderTimer();
@@ -214,68 +211,12 @@ public sealed class VisualizerForm : Form
     private void ProcessAudio()
     {
         VisualizerSettings settings;
-        string mode;
-        lock (_settingsLock) { settings = _settings; mode = _activeMode; }
-
-        if (mode == "wave")
-            ProcessVU(settings);
-        else
-            ProcessSpectrum(settings);
+        lock (_settingsLock) { settings = _settings; }
+        ProcessSpectrum(settings);
     }
 
     private static float HzToMel(float hz) => 2595f * MathF.Log10(1f + hz / 700f);
     private static float MelToHz(float mel) => 700f * (MathF.Pow(10f, mel / 2595f) - 1f);
-
-    private void ProcessVU(VisualizerSettings settings)
-    {
-        float peak  = 0f;
-        float sumSq = 0f;
-
-        for (int i = 0; i < FftSize; i++)
-        {
-            float s = _fftBuffer[i];
-            sumSq += s * s;
-            peak   = Math.Max(peak, Math.Abs(s));
-        }
-
-        float rms      = MathF.Sqrt(sumSq / FftSize);
-        float combined = rms * 0.5f + peak * 0.5f;
-
-        float db    = combined > 0f ? 20f * MathF.Log10(combined) : -120f;
-        float level = Math.Clamp((db + 60f) / 60f, 0f, 1f);
-
-        _vuSmoothed = _vuSmoothed < level
-            ? Lerp(_vuSmoothed, level, 0.9f)
-            : Lerp(_vuSmoothed, level, 0.08f);
-
-        _dynamicCeiling = _vuSmoothed > _dynamicCeiling
-            ? Lerp(_dynamicCeiling, _vuSmoothed, 0.25f)
-            : Lerp(_dynamicCeiling, _vuSmoothed, 0.01f);
-        _dynamicCeiling = Math.Max(_dynamicCeiling, 0.01f);
-
-        float target = Math.Clamp(
-            _vuSmoothed / _dynamicCeiling * (settings.Sensitivity / 100f),
-            0f, 1f);
-
-        int barCount = Math.Max(1, settings.BarCount);
-
-        for (int i = 0; i < barCount; i++)
-        {
-            float variation   = i < VuVariations.Length ? VuVariations[i] : 1f;
-            float finalTarget = target * variation;
-
-            _smoothedLevels[i] = _smoothedLevels[i] < finalTarget
-                ? Lerp(_smoothedLevels[i], finalTarget, 0.95f)
-                : Lerp(_smoothedLevels[i], finalTarget, 0.12f);
-
-            float barHeight = _smoothedLevels[i] * Height;
-
-            if (barHeight > _peakLevels[i])
-                _peakLevels[i] = barHeight;
-            else
-                _peakLevels[i] *= 0.94f;
-        }
-    }
 
     private void ProcessSpectrum(VisualizerSettings settings)
     {
@@ -315,7 +256,7 @@ public sealed class VisualizerForm : Form
             float gain = lowBoost * midShape * highBoost;
 
             final *= gain;
-            final *= 0.97f + 0.03f * MathF.Sin(i * 0.2f + _vuSmoothed * 5f);
+            final *= 0.97f + 0.03f * MathF.Sin(i * 0.2f);
 
             _rawTargets[i] = final;
         }
@@ -326,10 +267,10 @@ public sealed class VisualizerForm : Form
 
     private void RunFFT()
     {
+        int start = _fftWritePos;
         for (int i = 0; i < FftSize; i++)
         {
-            double hann = 0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1)));
-            _fftComplex[i].X = _fftBuffer[(_fftWritePos + i) % FftSize] * (float)hann;
+            _fftComplex[i].X = _fftBuffer[(start + i) % FftSize] * HannWindow[i];
             _fftComplex[i].Y = 0f;
         }
 
@@ -469,16 +410,18 @@ public sealed class VisualizerForm : Form
         TimeSpan anchor;
         TimeSpan duration;
         DateTime anchorTime;
+        bool     playing;
         lock (_mediaLock)
         {
             anchor     = _positionAnchor;
             duration   = _mediaDuration;
             anchorTime = _anchorSetAt;
+            playing    = _isPlaying;
         }
 
         if (duration.TotalSeconds <= 0 || anchorTime == DateTime.MinValue) return;
 
-        TimeSpan current  = anchor + (DateTime.Now - anchorTime);
+        TimeSpan current  = playing ? anchor + (DateTime.Now - anchorTime) : anchor;
         double   fraction = Math.Clamp(current.TotalSeconds / duration.TotalSeconds, 0.0, 1.0);
 
         int barW = (int)(Width * fraction);
@@ -510,19 +453,7 @@ public sealed class VisualizerForm : Form
         };
 
         var menu = new ContextMenuStrip();
-
-        _modeMenuItem = new ToolStripMenuItem(ModeMenuLabel())
-        {
-            Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold)
-        };
-        _modeMenuItem.Click += (_, _) => ToggleMode();
-        menu.Items.Add(_modeMenuItem);
-
-        _presetMenuItem = new ToolStripMenuItem(PresetMenuLabel());
-        _presetMenuItem.Click += (_, _) => CycleColorPreset();
-        menu.Items.Add(_presetMenuItem);
-
-        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open settings",      null, (_, _) => OpenSettingsFile());
         menu.Items.Add("Reload settings",    null, (_, _) => ReloadSettings());
         menu.Items.Add("Toggle stay on top", null, (_, _) => ToggleStayOnTop());
         menu.Items.Add(new ToolStripSeparator());
@@ -532,50 +463,17 @@ public sealed class VisualizerForm : Form
         _trayIcon.DoubleClick += (_, _) => ToggleStayOnTop();
     }
 
-    private void ToggleMode()
+    private void OpenSettingsFile()
     {
-        lock (_settingsLock)
-            _activeMode = _activeMode == "wave" ? "spectrum" : "wave";
-
-        _dynamicCeiling = 0.01f;
-        _vuSmoothed     = 0f;
-
-        if (_modeMenuItem is not null)
-            _modeMenuItem.Text = ModeMenuLabel();
-
-        Invalidate();
-    }
-
-    private string ModeMenuLabel()
-    {
-        string current = _activeMode == "wave" ? "Wave (VU)" : "Spectrum";
-        string next    = _activeMode == "wave" ? "Spectrum"  : "Wave (VU)";
-        return $"Current Mode: {current}";
-    }
-
-    private void CycleColorPreset()
-    {
-        _presetIndex = (_presetIndex + 1) % (ColorPresets.Length + 1);
-
-        Color newColor = _presetIndex == 0
-            ? _settings.BarColor
-            : ColorPresets[_presetIndex - 1].Value;
-
-        _barBrush.Dispose();
-        _barBrush = new SolidBrush(newColor);
-
-        if (_presetMenuItem is not null)
-            _presetMenuItem.Text = PresetMenuLabel();
-
-        Invalidate();
-    }
-
-    private string PresetMenuLabel()
-    {
-        string name = _presetIndex == 0
-            ? "Default (INI)"
-            : ColorPresets[_presetIndex - 1].Name;
-        return $"Colour: {name} preset";
+        try
+        {
+            Process.Start(new ProcessStartInfo(_settingsPath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
+                $"Couldn't open settings.ini:\n{ex.Message}", ToolTipIcon.Warning);
+        }
     }
 
     private void OnHandleCreated(object? sender, EventArgs e)
@@ -598,20 +496,41 @@ public sealed class VisualizerForm : Form
 
     private void SetupAudio()
     {
-        _capture = new WasapiLoopbackCapture();
-        _capture.DataAvailable += (_, args) =>
+        WasapiLoopbackCapture? capture = null;
+        try
         {
-            int floatCount = args.BytesRecorded / sizeof(float);
-            for (int i = 0; i < floatCount; i += 2)
+            capture = new WasapiLoopbackCapture();
+            int channels = capture.WaveFormat.Channels;
+            capture.DataAvailable += (_, args) =>
             {
-                float left  = BitConverter.ToSingle(args.Buffer, i * 4);
-                float right = BitConverter.ToSingle(args.Buffer, (i + 1) * 4);
-                _fftBuffer[_fftWritePos % FftSize] = (left + right) * 0.5f;
-                _fftWritePos++;
-            }
-        };
-        _capture.RecordingStopped += (_, _) => { };
-        _capture.StartRecording();
+                var samples = MemoryMarshal.Cast<byte, float>(args.Buffer.AsSpan(0, args.BytesRecorded));
+                for (int i = 0; i + channels <= samples.Length; i += channels)
+                {
+                    float sum = 0f;
+                    for (int c = 0; c < channels; c++) sum += samples[i + c];
+                    _fftBuffer[_fftWritePos] = sum / channels;
+                    _fftWritePos = (_fftWritePos + 1) % FftSize;
+                }
+                _lastAudioTick = Environment.TickCount64;
+            };
+            capture.StartRecording();
+            _capture = capture;
+        }
+        catch
+        {
+            capture?.Dispose();
+            _capture = null;
+        }
+    }
+
+    private void RestartAudio()
+    {
+        if (_isDisposed) return;
+        _capture?.StopRecording();
+        _capture?.Dispose();
+        _capture = null;
+        Array.Clear(_fftBuffer);
+        SetupAudio();
     }
 
     private void SetupRenderTimer()
@@ -623,6 +542,7 @@ public sealed class VisualizerForm : Form
         _renderTimer   = new System.Windows.Forms.Timer { Interval = intervalMs };
         _renderTimer.Tick += (_, _) =>
         {
+            if (Environment.TickCount64 - _lastAudioTick > 200) Array.Clear(_fftBuffer);
             ProcessAudio();
             UpdateMarquee();
             Invalidate();
@@ -632,11 +552,12 @@ public sealed class VisualizerForm : Form
 
     private async Task RefreshMediaAsync()
     {
-        if (_isDisposed) return;
+        if (_isDisposed || _isRefreshingMedia) return;
+        _isRefreshingMedia = true;
         try
         {
-            var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            var session = FindSpotifySession(manager) ?? manager.GetCurrentSession();
+            _mediaManager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+            var session = FindSpotifySession(_mediaManager) ?? _mediaManager.GetCurrentSession();
 
             if (session is null) { SetMedia(MediaSnapshot.Empty); return; }
 
@@ -657,12 +578,14 @@ public sealed class VisualizerForm : Form
                 var      timeline    = session.GetTimelineProperties();
                 TimeSpan newPosition = timeline.Position;
                 TimeSpan newDuration = timeline.EndTime - timeline.StartTime;
+                bool     playing     = session.GetPlaybackInfo().PlaybackStatus ==
+                                       GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
 
                 lock (_mediaLock)
                 {
                     _mediaDuration = newDuration;
 
-                    if (_anchorSetAt == DateTime.MinValue)
+                    if (_anchorSetAt == DateTime.MinValue || !playing || !_isPlaying)
                     {
                         _positionAnchor = newPosition;
                         _anchorSetAt    = DateTime.Now;
@@ -678,6 +601,8 @@ public sealed class VisualizerForm : Form
                             _anchorSetAt    = DateTime.Now;
                         }
                     }
+
+                    _isPlaying = playing;
                 }
             }
             catch { }
@@ -688,7 +613,12 @@ public sealed class VisualizerForm : Form
                 session.SourceAppUserModelId,
                 albumArt));
         }
-        catch { SetMedia(MediaSnapshot.Empty); }
+        catch
+        {
+            _mediaManager = null;
+            SetMedia(MediaSnapshot.Empty);
+        }
+        finally { _isRefreshingMedia = false; }
     }
 
     private static GlobalSystemMediaTransportControlsSession? FindSpotifySession(
@@ -703,18 +633,18 @@ public sealed class VisualizerForm : Form
 
     private void SetMedia(MediaSnapshot snapshot)
     {
-        lock (_mediaLock) { _media.AlbumArt?.Dispose(); _media = snapshot; }
+        lock (_mediaLock)
+        {
+            _media.AlbumArt?.Dispose();
+            _media = snapshot;
+            if (ReferenceEquals(snapshot, MediaSnapshot.Empty)) _mediaDuration = TimeSpan.Zero;
+        }
     }
 
     private void OnSettingsFileChanged(object sender, FileSystemEventArgs e)
     {
-        if (_isReloadPending || _isDisposed) return;
-        _isReloadPending = true;
-        BeginInvoke(new Action(() =>
-        {
-            try     { ReloadSettings(); }
-            finally { _isReloadPending = false; }
-        }));
+        if (_isDisposed || !IsHandleCreated) return;
+        BeginInvoke(new Action(() => { _reloadDebounce.Stop(); _reloadDebounce.Start(); }));
     }
 
     private void ReloadSettings()
@@ -724,15 +654,11 @@ public sealed class VisualizerForm : Form
             var n = new VisualizerSettings(_settingsPath);
             lock (_settingsLock)
             {
-                _settings   = n;
-                _stayOnTop  = n.Stayontop;
-                _activeMode = n.Mode;
+                _settings  = n;
+                _stayOnTop = n.Stayontop;
 
-                if (_presetIndex == 0)
-                {
-                    _barBrush.Dispose();
-                    _barBrush = new SolidBrush(n.BarColor);
-                }
+                _barBrush.Dispose();
+                _barBrush = new SolidBrush(n.BarColor);
 
                 Array.Resize(ref _smoothedLevels, n.BarCount);
                 Array.Resize(ref _peakLevels,     n.BarCount);
@@ -740,21 +666,21 @@ public sealed class VisualizerForm : Form
             }
 
             _dynamicCeiling  = 0.01f;
-            _vuSmoothed      = 0f;
             _marqueeActive   = false;
             _marqueeOffset   = 0f;
             _marqueeWait     = 0f;
             _lastMarqueeText = "";
-
-            if (_modeMenuItem is not null)
-                _modeMenuItem.Text = ModeMenuLabel();
 
             ApplyWindowBounds();
             SetupRenderTimer();
             ApplyStayOnTop();
             Invalidate();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
+                $"Couldn't reload settings.ini:\n{ex.Message}", ToolTipIcon.Warning);
+        }
     }
 
     private void ToggleStayOnTop()
@@ -782,8 +708,11 @@ public sealed class VisualizerForm : Form
         _mediaTimer.Dispose();
         _renderTimer?.Stop();
         _renderTimer?.Dispose();
+        _reloadDebounce.Dispose();
         _settingsWatcher.EnableRaisingEvents = false;
         _settingsWatcher.Dispose();
+        _deviceEnumerator.UnregisterEndpointNotificationCallback(_deviceWatcher);
+        _deviceEnumerator.Dispose();
         _capture?.StopRecording();
         _capture?.Dispose();
 
@@ -811,104 +740,17 @@ public sealed class VisualizerForm : Form
         public static MediaSnapshot Empty { get; } = new(null, null, null, null);
         public MediaSnapshot CloneShallow() => new(Title, Artist, SourceApp, AlbumArt);
     }
-}
 
-internal static class Program
-{
-    [STAThread]
-    private static void Main()
+    private sealed class DefaultDeviceWatcher(Action onDefaultOutputChanged) : IMMNotificationClient
     {
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
-        string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.ini");
-        EnsureDefaultSettingsFile(settingsPath);
-
-        VisualizerSettings settings;
-        try
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
-            settings = new VisualizerSettings(settingsPath);
-        }
-        catch (FormatException ex)
-        {
-            MessageBox.Show($"Settings format error:\n{ex.Message}",
-                "Audio Visualizer", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to load settings:\n{ex.Message}",
-                "Audio Visualizer", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            if (flow == DataFlow.Render && role == Role.Multimedia) onDefaultOutputChanged();
         }
 
-        Application.Run(new VisualizerForm(settings, settingsPath));
-    }
-
-    private static void EnsureDefaultSettingsFile(string path)
-    {
-        if (File.Exists(path)) return;
-        File.WriteAllLines(path, new[]
-        {
-            "; ╔══════════════════════════════════════════════════════╗",
-            "; ║           Audio Visualizer - settings.ini            ║",
-            "; ║  Changes apply live — no restart needed.             ║",
-            "; ╚══════════════════════════════════════════════════════╝",
-            "",
-            "[config]",
-            "",
-            "; How tall bars reach (percentage, 75 = aim for ~75% height at peak)",
-            "sensitivity=75",
-            "",
-            "; Render frame rate (15–240). Higher = smoother but more CPU.",
-            "fps=90",
-            "",
-            "; Number of bars drawn across the window.",
-            "bars=250",
-            "",
-            "; Window size in pixels.",
-            "width=650",
-            "height=150",
-            "",
-            "; Pixel gap between bars (0 = bars touch).",
-            "barspacing=0",
-            "",
-            "; Show a peak dot above each bar (true/false).",
-            "showpeakbars=true",
-            "",
-            "; Keep window above all other windows (true/false).",
-            "; Can also be toggled by double-clicking the tray icon.",
-            "stayontop=true",
-            "",
-            "; Visualizer mode:",
-            ";   spectrum  —  frequency bars, bass left / treble right",
-            ";   wave      —  VU meter, all bars move together with the beat",
-            "; Can also be toggled live from the tray icon menu.",
-            "mode=spectrum",
-            "",
-            "; Window corner position: bottom-right | bottom-left",
-            "position=bottom-right",
-            "",
-            "[mediainfo]",
-            "",
-            "; Show the currently playing track overlay (true/false).",
-            "mediainfo=true",
-            "",
-            "; Show song title and artist (true/false).",
-            "; Long titles scroll automatically as a marquee.",
-            "showtitle=true",
-            "",
-            "; Show a progress bar at the bottom of the window (true/false).",
-            "showprogressbar=true",
-            "",
-            "[color]",
-            "",
-            "; Bar colour as RGBA (0–255 each). a = opacity (255 = fully opaque).",
-            "; Colour presets can also be cycled live from the tray icon menu.",
-            "r=30",
-            "g=144",
-            "b=155",
-            "a=210"
-        });
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+        public void OnDeviceAdded(string pwstrDeviceId) { }
+        public void OnDeviceRemoved(string deviceId) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
     }
 }

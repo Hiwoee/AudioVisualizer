@@ -10,7 +10,6 @@ public class VisualizerSettings
     private readonly FileIniDataParser _parser = new();
     private readonly string            _iniPath;
 
-    // ── [config] ──────────────────────────────────────────────────────────────
     public int    Fps          { get; private set; }
     public int    BarCount     { get; private set; }
     public float  Sensitivity  { get; private set; }
@@ -21,9 +20,6 @@ public class VisualizerSettings
     public bool   Showprogressbar { get; private set; }
     public bool   Stayontop    { get; private set; }
 
-    // "spectrum" — frequency-accurate bars
-    // "wave"     — smooth beat-driven shape
-    public string Mode { get; private set; } = "spectrum";
     public string Position { get; private set; } = "center";
 
     public bool Mediainfo { get; private set; }
@@ -50,17 +46,14 @@ public class VisualizerSettings
         Height       = Math.Max  (ReadInt  (data, "config", "height",       150),  50);
         Barspacing   = Math.Max  (ReadInt  (data, "config", "barspacing",   0),    0);
         Showpeakbars =            ReadBool (data, "config", "showpeakbars", true);
-        Showprogressbar =         ReadBool (data, "config", "showprogressbar", true);
         Stayontop    =            ReadBool (data, "config", "stayontop",    true);
 
-
-        string rawMode = RawValue(data, "config", "mode") ?? "spectrum";
-        Mode = rawMode.Trim().ToLowerInvariant() == "wave" ? "wave" : "spectrum";
-
-        Position = RawValue(data, "config", "position") ?? "center";
+        Position = (RawValue(data, "config", "position") ?? "bottom-right").ToLowerInvariant();
 
         Mediainfo = ReadBool(data, "mediainfo", "mediainfo", true);
         Showtitle = ReadBool(data, "mediainfo", "showtitle", true);
+        Showprogressbar = ReadBool(data, "mediainfo", "showprogressbar",
+                          ReadBool(data, "config", "showprogressbar", true));
 
         byte r = ReadByte(data, "color", "r", 30);
         byte g = ReadByte(data, "color", "g", 144);
