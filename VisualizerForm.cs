@@ -390,7 +390,7 @@ public sealed class VisualizerForm : Form
 
     private void DrawMediaInfo(Graphics g, VisualizerSettings settings)
     {
-        if (!settings.Mediainfo || !settings.Showtitle) return;
+        if (!settings.Mediainfo) return;
 
         var media = _media;
         if (string.IsNullOrWhiteSpace(media.Title)) return;
@@ -412,6 +412,8 @@ public sealed class VisualizerForm : Form
             g.DrawImage(SpotifyIcon, textX, textY + (_mediaFont.Height - SourceIconSize) / 2, SourceIconSize, SourceIconSize);
             textX += SourceIconSize + 6;
         }
+
+        if (!settings.Showtitle) return;
 
         string text          = string.IsNullOrWhiteSpace(media.Artist)
             ? media.Title!
