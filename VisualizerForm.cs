@@ -55,7 +55,8 @@ public sealed class VisualizerForm : Form
     private const string RunKeyPath   = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "AudioVisualizer";
 
-    private const int FftSize = 4096;
+    private const int  FftSize           = 4096;
+    private const long HideAfterPausedMs = 5000;
 
     private readonly float[]   _fftBuffer  = new float[FftSize];
     private readonly Complex[] _fftComplex = new Complex[FftSize];
@@ -134,6 +135,7 @@ public sealed class VisualizerForm : Form
     private GlobalSystemMediaTransportControlsSessionManager? _mediaManager;
     private bool _isRefreshingMedia;
     private bool _isPlaying;
+    private long _lastPlayingTick;
 
     private readonly Font  _mediaFont = new("Segoe UI", 10, FontStyle.Bold);
     private readonly Brush _peakBrush = Brushes.White;
@@ -248,6 +250,7 @@ public sealed class VisualizerForm : Form
             }
         }
 
+        if (Environment.TickCount64 - _lastPlayingTick > HideAfterPausedMs) return;
         DrawMediaInfo(g, settings);
         DrawProgressBar(g, settings);
     }
@@ -662,7 +665,7 @@ public sealed class VisualizerForm : Form
         try
         {
             _mediaManager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            var session = FindSpotifySession(_mediaManager) ?? _mediaManager.GetCurrentSession();
+            var session = FindPlayingSpotifySession(_mediaManager) ?? _mediaManager.GetCurrentSession();
 
             if (session is null) { SetMedia(MediaSnapshot.Empty); return; }
 
@@ -710,6 +713,7 @@ public sealed class VisualizerForm : Form
                     }
 
                     _isPlaying = playing;
+                    if (playing) _lastPlayingTick = Environment.TickCount64;
                 }
             }
             catch { }
@@ -729,12 +733,13 @@ public sealed class VisualizerForm : Form
     }
 
     [SupportedOSPlatform("windows10.0.17763")]
-    private static GlobalSystemMediaTransportControlsSession? FindSpotifySession(
+    private static GlobalSystemMediaTransportControlsSession? FindPlayingSpotifySession(
         GlobalSystemMediaTransportControlsSessionManager manager)
     {
         foreach (var s in manager.GetSessions())
             if (!string.IsNullOrWhiteSpace(s.SourceAppUserModelId) &&
-                s.SourceAppUserModelId.Contains("Spotify", StringComparison.OrdinalIgnoreCase))
+                s.SourceAppUserModelId.Contains("Spotify", StringComparison.OrdinalIgnoreCase) &&
+                s.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
                 return s;
         return null;
     }
