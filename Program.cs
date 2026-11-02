@@ -51,6 +51,7 @@ internal static class Program
             "[mediainfo]",
             "mediainfo=true",
             "showtitle=true",
+            "showsourceicon=true",
             "showprogressbar=true",
             "",
             "[color]",

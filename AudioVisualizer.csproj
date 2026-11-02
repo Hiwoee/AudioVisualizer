@@ -1,39 +1,65 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>AudioVisualizer</RootNamespace>
+    <AssemblyName>AudioVisualizer</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
-
-    <TargetPlatformIdentifier>Windows</TargetPlatformIdentifier>
-    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
-    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
-
-    <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>false</SelfContained>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <IncludeAllContentForSelfExtract>false</IncludeAllContentForSelfExtract>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <InvariantGlobalization>true</InvariantGlobalization>
-
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-
     <ApplicationIcon>Cat.ico</ApplicationIcon>
-    <Win32Icon>Cat.ico</Win32Icon>
+    <LangVersion>latest</LangVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+    <AssemblyTitle>Audio Visualizer</AssemblyTitle>
+    <Product>Audio Visualizer</Product>
+    <Company>Hiwo</Company>
+    <Authors>Hiwo</Authors>
+    <Copyright>Copyright © 2026 Hiwo</Copyright>
+    <NeutralLanguage>en</NeutralLanguage>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishDir>bin\publish\</PublishDir>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DebugType>embedded</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CsWinRTWindowsMetadata>local</CsWinRTWindowsMetadata>
+    <CsWinRTIncludes>Windows.Media.Control;Windows.Media.MediaPlaybackType;Windows.Media.MediaPlaybackAutoRepeatMode;Windows.Foundation;Windows.Storage.Streams.IBuffer;Windows.Storage.Streams.IInputStream;Windows.Storage.Streams.IOutputStream;Windows.Storage.Streams.IRandomAccessStream;Windows.Storage.Streams.IContentTypeProvider;Windows.Storage.Streams.InputStreamOptions;Windows.Storage.Streams.DataReader;Windows.Storage.Streams.IDataReader;Windows.Storage.Streams.UnicodeEncoding;Windows.Storage.Streams.ByteOrder</CsWinRTIncludes>
+    <CsWinRTExcludes>Windows.Foundation.Diagnostics;Windows.Storage.Streams.IBufferFactory;Windows.Storage.Streams.IBufferStatics;Windows.Storage.Streams.IRandomAccessStreamReferenceStatics;Windows.Storage.Streams.IRandomAccessStreamStatics</CsWinRTExcludes>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="Cat.ico">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
+    <EmbeddedResource Include="icons\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ini-parser-netstandard" Version="2.5.2" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
   </ItemGroup>
 
 </Project>

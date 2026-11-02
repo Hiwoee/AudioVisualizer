@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Dsp;
 using NAudio.Wave;
 using Windows.Media.Control;
+using Windows.Storage.Streams;
 
 namespace AudioVisualizer;
 
@@ -20,6 +23,20 @@ public sealed class VisualizerForm : Form
     private static extern bool SetLayeredWindowAttributes(
         IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateWaitableTimerExW(
+        IntPtr attributes, string? name, uint flags, uint access);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetWaitableTimer(
+        IntPtr timer, ref long dueTime, int period, IntPtr completion, IntPtr arg, bool resume);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
     private static readonly IntPtr HwndTopmost = new(-1);
     private static readonly IntPtr HwndBottom  = new(1);
 
@@ -30,6 +47,13 @@ public sealed class VisualizerForm : Form
     private const int  WsExToolWindow  = 0x00000080;
     private const int  WsExTransparent = 0x00000020;
     private const uint LwaColorKey     = 0x00000001;
+
+    private const uint TimerHighResolution = 0x00000002;
+    private const uint TimerAllAccess      = 0x001F0003;
+    private const uint WaitInfinite        = 0xFFFFFFFF;
+
+    private const string RunKeyPath   = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "AudioVisualizer";
 
     private const int FftSize = 4096;
 
@@ -47,6 +71,24 @@ public sealed class VisualizerForm : Form
         for (int i = 0; i < FftSize; i++)
             w[i] = (float)(0.5 * (1.0 - Math.Cos(2.0 * Math.PI * i / (FftSize - 1))));
         return w;
+    }
+
+    private const int SourceIconSize = 16;
+
+    private static readonly Image? SpotifyIcon = LoadIcon("Spotify.png");
+
+    private static Image? LoadIcon(string file)
+    {
+        using var stream = typeof(VisualizerForm).Assembly.GetManifestResourceStream($"AudioVisualizer.icons.{file}");
+        if (stream is null) return null;
+
+        using var source = Image.FromStream(stream);
+        var icon = new Bitmap(SourceIconSize, SourceIconSize);
+        using var g = Graphics.FromImage(icon);
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode   = PixelOffsetMode.HighQuality;
+        g.DrawImage(source, 0, 0, SourceIconSize, SourceIconSize);
+        return icon;
     }
 
     private float[] _smoothedLevels;
@@ -85,8 +127,9 @@ public sealed class VisualizerForm : Form
     private NotifyIcon?                         _trayIcon;
     private readonly FileSystemWatcher          _settingsWatcher;
     private readonly System.Windows.Forms.Timer _reloadDebounce = new() { Interval = 250 };
-    private System.Windows.Forms.Timer?         _renderTimer;
     private readonly System.Windows.Forms.Timer _mediaTimer;
+    private long                                _frameInterval;
+    private int                                 _framePending;
 
     private GlobalSystemMediaTransportControlsSessionManager? _mediaManager;
     private bool _isRefreshingMedia;
@@ -150,6 +193,7 @@ public sealed class VisualizerForm : Form
 
         SetupAudio();
         SetupRenderTimer();
+        new Thread(RenderLoop) { IsBackground = true, Name = "Render" }.Start();
         ApplyStayOnTop();
 
         _mediaTimer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -370,6 +414,13 @@ public sealed class VisualizerForm : Form
             textX += artSize + 10;
         }
 
+        if (settings.Showsourceicon && SpotifyIcon is not null &&
+            media.SourceApp?.Contains("Spotify", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            g.DrawImage(SpotifyIcon, textX, textY + (_mediaFont.Height - SourceIconSize) / 2, SourceIconSize, SourceIconSize);
+            textX += SourceIconSize + 6;
+        }
+
         string text          = string.IsNullOrWhiteSpace(media.Artist)
             ? media.Title!
             : $"{media.Title} - {media.Artist}";
@@ -456,6 +507,11 @@ public sealed class VisualizerForm : Form
         menu.Items.Add("Open settings",      null, (_, _) => OpenSettingsFile());
         menu.Items.Add("Reload settings",    null, (_, _) => ReloadSettings());
         menu.Items.Add("Toggle stay on top", null, (_, _) => ToggleStayOnTop());
+
+        var startWithWindows = new ToolStripMenuItem("Start with Windows") { Checked = IsStartWithWindowsOn() };
+        startWithWindows.Click += (_, _) => ToggleStartWithWindows(startWithWindows);
+        menu.Items.Add(startWithWindows);
+
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Close());
 
@@ -474,6 +530,30 @@ public sealed class VisualizerForm : Form
             _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
                 $"Couldn't open settings.ini:\n{ex.Message}", ToolTipIcon.Warning);
         }
+    }
+
+    private static string StartupCommand => $"\"{Environment.ProcessPath}\"";
+
+    private static bool IsStartWithWindowsOn()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+        return string.Equals(key?.GetValue(RunValueName) as string, StartupCommand, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ToggleStartWithWindows(ToolStripMenuItem item)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+            if (IsStartWithWindowsOn()) key.DeleteValue(RunValueName, false);
+            else                        key.SetValue(RunValueName, StartupCommand);
+        }
+        catch (Exception ex)
+        {
+            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
+                $"Couldn't change Start with Windows:\n{ex.Message}", ToolTipIcon.Warning);
+        }
+        item.Checked = IsStartWithWindowsOn();
     }
 
     private void OnHandleCreated(object? sender, EventArgs e)
@@ -534,25 +614,50 @@ public sealed class VisualizerForm : Form
     }
 
     private void SetupRenderTimer()
-    {
-        _renderTimer?.Stop();
-        _renderTimer?.Dispose();
+        => _frameInterval = Stopwatch.Frequency / Math.Clamp(_settings.Fps, 15, 240);
 
-        int intervalMs = Math.Max(1, (int)Math.Round(1000d / Math.Clamp(_settings.Fps, 15, 240)));
-        _renderTimer   = new System.Windows.Forms.Timer { Interval = intervalMs };
-        _renderTimer.Tick += (_, _) =>
+    private void RenderLoop()
+    {
+        IntPtr timer = CreateWaitableTimerExW(IntPtr.Zero, null, TimerHighResolution, TimerAllAccess);
+        if (timer == IntPtr.Zero)
+            timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0, TimerAllAccess);
+
+        long next = Stopwatch.GetTimestamp();
+        while (!_isDisposed)
         {
-            if (Environment.TickCount64 - _lastAudioTick > 200) Array.Clear(_fftBuffer);
-            ProcessAudio();
-            UpdateMarquee();
-            Invalidate();
-        };
-        _renderTimer.Start();
+            next += _frameInterval;
+            long wait = next - Stopwatch.GetTimestamp();
+            if (wait <= 0)
+            {
+                next = Stopwatch.GetTimestamp();
+            }
+            else
+            {
+                long due = -(wait * 10_000_000 / Stopwatch.Frequency);
+                SetWaitableTimer(timer, ref due, 0, IntPtr.Zero, IntPtr.Zero, false);
+                WaitForSingleObject(timer, WaitInfinite);
+            }
+
+            if (!IsHandleCreated || Interlocked.Exchange(ref _framePending, 1) != 0) continue;
+            try { BeginInvoke(new Action(RenderFrame)); }
+            catch (InvalidOperationException) { break; }
+        }
+
+        CloseHandle(timer);
+    }
+
+    private void RenderFrame()
+    {
+        _framePending = 0;
+        if (Environment.TickCount64 - _lastAudioTick > 200) Array.Clear(_fftBuffer);
+        ProcessAudio();
+        UpdateMarquee();
+        Invalidate();
     }
 
     private async Task RefreshMediaAsync()
     {
-        if (_isDisposed || _isRefreshingMedia) return;
+        if (_isDisposed || _isRefreshingMedia || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
         _isRefreshingMedia = true;
         try
         {
@@ -567,9 +672,11 @@ public sealed class VisualizerForm : Form
             Image? albumArt = null;
             if (props.Thumbnail is not null)
             {
-                using var stream        = await props.Thumbnail.OpenReadAsync();
-                using var contentStream = stream.AsStreamForRead();
-                using var temp          = Image.FromStream(contentStream);
+                using var stream = await props.Thumbnail.OpenReadAsync();
+                using var reader = new DataReader(stream);
+                var bytes = new byte[await reader.LoadAsync((uint)stream.Size)];
+                reader.ReadBytes(bytes);
+                using var temp = Image.FromStream(new MemoryStream(bytes));
                 albumArt = new Bitmap(temp);
             }
 
@@ -621,6 +728,7 @@ public sealed class VisualizerForm : Form
         finally { _isRefreshingMedia = false; }
     }
 
+    [SupportedOSPlatform("windows10.0.17763")]
     private static GlobalSystemMediaTransportControlsSession? FindSpotifySession(
         GlobalSystemMediaTransportControlsSessionManager manager)
     {
@@ -706,8 +814,6 @@ public sealed class VisualizerForm : Form
 
         _mediaTimer.Stop();
         _mediaTimer.Dispose();
-        _renderTimer?.Stop();
-        _renderTimer?.Dispose();
         _reloadDebounce.Dispose();
         _settingsWatcher.EnableRaisingEvents = false;
         _settingsWatcher.Dispose();

@@ -24,6 +24,7 @@ public class VisualizerSettings
 
     public bool Mediainfo { get; private set; }
     public bool Showtitle { get; private set; }
+    public bool Showsourceicon { get; private set; }
 
     public Color BarColor { get; private set; }
 
@@ -52,6 +53,7 @@ public class VisualizerSettings
 
         Mediainfo = ReadBool(data, "mediainfo", "mediainfo", true);
         Showtitle = ReadBool(data, "mediainfo", "showtitle", true);
+        Showsourceicon = ReadBool(data, "mediainfo", "showsourceicon", true);
         Showprogressbar = ReadBool(data, "mediainfo", "showprogressbar",
                           ReadBool(data, "config", "showprogressbar", true));
 
