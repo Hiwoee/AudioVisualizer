@@ -7,10 +7,7 @@ namespace AudioVisualizer;
 
 public class VisualizerSettings
 {
-    private readonly FileIniDataParser _parser = new();
-    private readonly string            _iniPath;
-
-    public int    Fps          { get; private set; }
+    public int    Fps         { get; private set; }
     public int    BarCount     { get; private set; }
     public float  Sensitivity  { get; private set; }
     public int    Width        { get; private set; }
@@ -20,7 +17,7 @@ public class VisualizerSettings
     public bool   Showprogressbar { get; private set; }
     public bool   Stayontop    { get; private set; }
 
-    public string Position { get; private set; } = "center";
+    public string Position { get; private set; }
 
     public bool Mediainfo { get; private set; }
     public bool Showtitle { get; private set; }
@@ -30,17 +27,12 @@ public class VisualizerSettings
 
     public VisualizerSettings(string iniPath)
     {
-        _iniPath = iniPath;
         if (!File.Exists(iniPath))
             throw new FileNotFoundException("Could not find settings file.", iniPath);
-        Load();
-    }
 
-    public void Load()
-    {
-        IniData data = _parser.ReadFile(_iniPath);
+        IniData data = new FileIniDataParser().ReadFile(iniPath);
 
-        Fps          = Math.Clamp(ReadInt  (data, "config", "fps",          90),   1, 240);
+        Fps          = Math.Clamp(ReadInt  (data, "config", "fps",          90),   15, 240);
         BarCount     = Math.Clamp(ReadInt  (data, "config", "bars",         150),  1, 1000);
         Sensitivity  =            ReadFloat(data, "config", "sensitivity",  75f);
         Width        = Math.Max  (ReadInt  (data, "config", "width",        550),  100);

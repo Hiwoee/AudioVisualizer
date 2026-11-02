@@ -16,12 +16,6 @@ internal static class Program
         {
             settings = new VisualizerSettings(settingsPath);
         }
-        catch (FormatException ex)
-        {
-            MessageBox.Show($"Settings format error:\n{ex.Message}",
-                "Audio Visualizer", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
         catch (Exception ex)
         {
             MessageBox.Show($"Failed to load settings:\n{ex.Message}",

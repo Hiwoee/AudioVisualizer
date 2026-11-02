@@ -114,8 +114,6 @@ public sealed class VisualizerForm : Form
     private const double SeekThresholdSeconds = 2.5;
 
     private readonly string _settingsPath;
-    private readonly object _settingsLock = new();
-    private readonly object _mediaLock    = new();
 
     private VisualizerSettings _settings;
     private bool               _stayOnTop;
@@ -226,8 +224,7 @@ public sealed class VisualizerForm : Form
         g.PixelOffsetMode   = PixelOffsetMode.HighSpeed;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        VisualizerSettings settings;
-        lock (_settingsLock) { settings = _settings; }
+        var settings = _settings;
 
         int   barCount     = Math.Max(1, settings.BarCount);
         float totalSpacing = Math.Max(0, (barCount - 1) * settings.Barspacing);
@@ -253,13 +250,6 @@ public sealed class VisualizerForm : Form
         if (Environment.TickCount64 - _lastPlayingTick > HideAfterPausedMs) return;
         DrawMediaInfo(g, settings);
         DrawProgressBar(g, settings);
-    }
-
-    private void ProcessAudio()
-    {
-        VisualizerSettings settings;
-        lock (_settingsLock) { settings = _settings; }
-        ProcessSpectrum(settings);
     }
 
     private static float HzToMel(float hz) => 2595f * MathF.Log10(1f + hz / 700f);
@@ -402,8 +392,7 @@ public sealed class VisualizerForm : Form
     {
         if (!settings.Mediainfo || !settings.Showtitle) return;
 
-        MediaSnapshot media;
-        lock (_mediaLock) { media = _media.CloneShallow(); }
+        var media = _media;
         if (string.IsNullOrWhiteSpace(media.Title)) return;
 
         const int margin  = 10;
@@ -461,22 +450,10 @@ public sealed class VisualizerForm : Form
     {
         if (!settings.Showprogressbar) return;
 
-        TimeSpan anchor;
-        TimeSpan duration;
-        DateTime anchorTime;
-        bool     playing;
-        lock (_mediaLock)
-        {
-            anchor     = _positionAnchor;
-            duration   = _mediaDuration;
-            anchorTime = _anchorSetAt;
-            playing    = _isPlaying;
-        }
+        if (_mediaDuration.TotalSeconds <= 0 || _anchorSetAt == DateTime.MinValue) return;
 
-        if (duration.TotalSeconds <= 0 || anchorTime == DateTime.MinValue) return;
-
-        TimeSpan current  = playing ? anchor + (DateTime.Now - anchorTime) : anchor;
-        double   fraction = Math.Clamp(current.TotalSeconds / duration.TotalSeconds, 0.0, 1.0);
+        TimeSpan current  = _isPlaying ? _positionAnchor + (DateTime.Now - _anchorSetAt) : _positionAnchor;
+        double   fraction = Math.Clamp(current.TotalSeconds / _mediaDuration.TotalSeconds, 0.0, 1.0);
 
         int barW = (int)(Width * fraction);
         if (barW <= 0) return;
@@ -617,7 +594,7 @@ public sealed class VisualizerForm : Form
     }
 
     private void SetupRenderTimer()
-        => _frameInterval = Stopwatch.Frequency / Math.Clamp(_settings.Fps, 15, 240);
+        => _frameInterval = Stopwatch.Frequency / _settings.Fps;
 
     private void RenderLoop()
     {
@@ -653,7 +630,7 @@ public sealed class VisualizerForm : Form
     {
         _framePending = 0;
         if (Environment.TickCount64 - _lastAudioTick > 200) Array.Clear(_fftBuffer);
-        ProcessAudio();
+        ProcessSpectrum(_settings);
         UpdateMarquee();
         Invalidate();
     }
@@ -691,30 +668,27 @@ public sealed class VisualizerForm : Form
                 bool     playing     = session.GetPlaybackInfo().PlaybackStatus ==
                                        GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
 
-                lock (_mediaLock)
-                {
-                    _mediaDuration = newDuration;
+                _mediaDuration = newDuration;
 
-                    if (_anchorSetAt == DateTime.MinValue || !playing || !_isPlaying)
+                if (_anchorSetAt == DateTime.MinValue || !playing || !_isPlaying)
+                {
+                    _positionAnchor = newPosition;
+                    _anchorSetAt    = DateTime.Now;
+                }
+                else
+                {
+                    TimeSpan estimate = _positionAnchor + (DateTime.Now - _anchorSetAt);
+                    double   diffSecs = Math.Abs((newPosition - estimate).TotalSeconds);
+
+                    if (diffSecs > SeekThresholdSeconds)
                     {
                         _positionAnchor = newPosition;
                         _anchorSetAt    = DateTime.Now;
                     }
-                    else
-                    {
-                        TimeSpan estimate = _positionAnchor + (DateTime.Now - _anchorSetAt);
-                        double   diffSecs = Math.Abs((newPosition - estimate).TotalSeconds);
-
-                        if (diffSecs > SeekThresholdSeconds)
-                        {
-                            _positionAnchor = newPosition;
-                            _anchorSetAt    = DateTime.Now;
-                        }
-                    }
-
-                    _isPlaying = playing;
-                    if (playing) _lastPlayingTick = Environment.TickCount64;
                 }
+
+                _isPlaying = playing;
+                if (playing) _lastPlayingTick = Environment.TickCount64;
             }
             catch { }
 
@@ -746,12 +720,9 @@ public sealed class VisualizerForm : Form
 
     private void SetMedia(MediaSnapshot snapshot)
     {
-        lock (_mediaLock)
-        {
-            _media.AlbumArt?.Dispose();
-            _media = snapshot;
-            if (ReferenceEquals(snapshot, MediaSnapshot.Empty)) _mediaDuration = TimeSpan.Zero;
-        }
+        _media.AlbumArt?.Dispose();
+        _media = snapshot;
+        if (ReferenceEquals(snapshot, MediaSnapshot.Empty)) _mediaDuration = TimeSpan.Zero;
     }
 
     private void OnSettingsFileChanged(object sender, FileSystemEventArgs e)
@@ -765,18 +736,15 @@ public sealed class VisualizerForm : Form
         try
         {
             var n = new VisualizerSettings(_settingsPath);
-            lock (_settingsLock)
-            {
-                _settings  = n;
-                _stayOnTop = n.Stayontop;
+            _settings  = n;
+            _stayOnTop = n.Stayontop;
 
-                _barBrush.Dispose();
-                _barBrush = new SolidBrush(n.BarColor);
+            _barBrush.Dispose();
+            _barBrush = new SolidBrush(n.BarColor);
 
-                Array.Resize(ref _smoothedLevels, n.BarCount);
-                Array.Resize(ref _peakLevels,     n.BarCount);
-                Array.Resize(ref _rawTargets,      n.BarCount);
-            }
+            Array.Resize(ref _smoothedLevels, n.BarCount);
+            Array.Resize(ref _peakLevels,     n.BarCount);
+            Array.Resize(ref _rawTargets,      n.BarCount);
 
             _dynamicCeiling  = 0.01f;
             _marqueeActive   = false;
@@ -837,11 +805,8 @@ public sealed class VisualizerForm : Form
         _barBrush.Dispose();
         _mediaFont.Dispose();
 
-        lock (_mediaLock)
-        {
-            _media.AlbumArt?.Dispose();
-            _media = MediaSnapshot.Empty;
-        }
+        _media.AlbumArt?.Dispose();
+        _media = MediaSnapshot.Empty;
     }
 
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
@@ -849,7 +814,6 @@ public sealed class VisualizerForm : Form
     private sealed record MediaSnapshot(string? Title, string? Artist, string? SourceApp, Image? AlbumArt)
     {
         public static MediaSnapshot Empty { get; } = new(null, null, null, null);
-        public MediaSnapshot CloneShallow() => new(Title, Artist, SourceApp, AlbumArt);
     }
 
     private sealed class DefaultDeviceWatcher(Action onDefaultOutputChanged) : IMMNotificationClient
