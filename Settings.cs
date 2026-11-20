@@ -5,9 +5,10 @@ namespace AudioVisualizer;
 
 public sealed class AppSettings
 {
-    public bool  Stayontop      { get; }
-    public bool  ShowVisualizer { get; }
-    public Color Color          { get; }
+    private readonly IniData _data;
+
+    public bool  Stayontop { get; }
+    public Color Color     { get; }
 
     public VisualizerSettings Visualizer { get; }
 
@@ -16,10 +17,9 @@ public sealed class AppSettings
         if (!File.Exists(iniPath))
             throw new FileNotFoundException("Could not find settings file.", iniPath);
 
-        IniData data = new FileIniDataParser().ReadFile(iniPath);
+        IniData data = _data = new FileIniDataParser().ReadFile(iniPath);
 
-        Stayontop      = Ini.ReadBool(data, "config",   "stayontop",  true);
-        ShowVisualizer = Ini.ReadBool(data, "overlays", "visualizer", true);
+        Stayontop = Ini.ReadBool(data, "config", "stayontop", true);
 
         byte r = Ini.ReadByte(data, "color", "r", 30);
         byte g = Ini.ReadByte(data, "color", "g", 144);
@@ -29,6 +29,8 @@ public sealed class AppSettings
 
         Visualizer = new VisualizerSettings(data);
     }
+
+    public bool OverlayOn(string key) => Ini.ReadBool(_data, "overlays", key, true);
 }
 
 public sealed class VisualizerSettings
@@ -95,4 +97,37 @@ internal static class Ini
 
     public static byte ReadByte(IniData data, string section, string key, byte fallback)
         => byte.TryParse(RawValue(data, section, key), out byte v) ? v : fallback;
+
+    public static void SetValue(string path, string section, string key, string value)
+    {
+        var lines = File.ReadAllLines(path).ToList();
+        string line = $"{key}={value}";
+
+        int start = lines.FindIndex(l => l.Trim().Equals($"[{section}]", StringComparison.OrdinalIgnoreCase));
+        if (start < 0)
+        {
+            lines.InsertRange(0, [$"[{section}]", line, ""]);
+            File.WriteAllLines(path, lines);
+            return;
+        }
+
+        int end = lines.FindIndex(start + 1, l => l.TrimStart().StartsWith('['));
+        if (end < 0) end = lines.Count;
+
+        int at = lines.FindIndex(start + 1, end - start - 1,
+            l => l.Split('=')[0].Trim().Equals(key, StringComparison.OrdinalIgnoreCase));
+
+        if (at >= 0)
+        {
+            lines[at] = line;
+        }
+        else
+        {
+            int insert = end;
+            while (insert > start + 1 && string.IsNullOrWhiteSpace(lines[insert - 1])) insert--;
+            lines.Insert(insert, line);
+        }
+
+        File.WriteAllLines(path, lines);
+    }
 }

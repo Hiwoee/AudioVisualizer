@@ -151,18 +151,16 @@ public sealed class VisualizerOverlay : OverlayWindow
 
         Place(n.Position, n.Width, n.Height);
         SetupRenderTimer();
-        Invalidate();
+        Redraw();
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    protected override void Draw(Graphics g)
     {
-        base.OnPaint(e);
         if (_capture is null) return;
 
-        var g = e.Graphics;
         g.SmoothingMode     = SmoothingMode.HighSpeed;
         g.PixelOffsetMode   = PixelOffsetMode.HighSpeed;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
         var settings = _settings;
 
@@ -187,7 +185,7 @@ public sealed class VisualizerOverlay : OverlayWindow
             }
         }
 
-        if (Environment.TickCount64 - _lastPlayingTick > HideAfterPausedMs) return;
+        if (!IsMediaShown) return;
         DrawMediaInfo(g, settings);
         DrawProgressBar(g, settings);
     }
@@ -490,10 +488,25 @@ public sealed class VisualizerOverlay : OverlayWindow
     private void RenderFrame()
     {
         _framePending = 0;
-        if (Environment.TickCount64 - _lastAudioTick > 200) Array.Clear(_fftBuffer);
+        if (_isDisposed) return;
+
+        bool silent = Environment.TickCount64 - _lastAudioTick > 200;
+        if (silent) Array.Clear(_fftBuffer);
+        if (silent && IsSettled() && !(IsMediaShown && _marqueeActive)) return;
+
         ProcessSpectrum(_settings);
         UpdateMarquee();
-        Invalidate();
+        Redraw();
+    }
+
+    private bool IsMediaShown => Environment.TickCount64 - _lastPlayingTick <= HideAfterPausedMs;
+
+    private bool IsSettled()
+    {
+        if (_dynamicCeiling > 0.01f) return false;
+        foreach (float level in _smoothedLevels) if (level * Height >= 0.5f) return false;
+        foreach (float peak  in _peakLevels)     if (peak >= 0.5f)           return false;
+        return true;
     }
 
     private async Task RefreshMediaAsync()
@@ -564,7 +577,11 @@ public sealed class VisualizerOverlay : OverlayWindow
             _mediaManager = null;
             SetMedia(MediaSnapshot.Empty);
         }
-        finally { _isRefreshingMedia = false; }
+        finally
+        {
+            _isRefreshingMedia = false;
+            Redraw();
+        }
     }
 
     [SupportedOSPlatform("windows10.0.17763")]

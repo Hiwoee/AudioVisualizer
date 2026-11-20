@@ -9,12 +9,13 @@ public sealed class OverlayApp : ApplicationContext
     private const string RunKeyPath   = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "AudioVisualizer";
 
-    private static readonly (Func<AppSettings, bool> IsOn, Func<AppSettings, OverlayWindow> Create)[] Overlays =
+    private static readonly (string Name, string Key, Func<AppSettings, OverlayWindow> Create)[] Overlays =
     [
-        (s => s.ShowVisualizer, s => new VisualizerOverlay(s)),
+        ("Audio visualizer", "visualizer", s => new VisualizerOverlay(s)),
     ];
 
-    private readonly OverlayWindow?[] _open = new OverlayWindow?[Overlays.Length];
+    private readonly OverlayWindow?[]     _open         = new OverlayWindow?[Overlays.Length];
+    private readonly ToolStripMenuItem[]  _overlayItems = new ToolStripMenuItem[Overlays.Length];
 
     private readonly string                     _settingsPath;
     private readonly SynchronizationContext     _ui = new WindowsFormsSynchronizationContext();
@@ -40,6 +41,9 @@ public sealed class OverlayApp : ApplicationContext
         _settingsWatcher.Changed += OnSettingsFileChanged;
         _reloadDebounce.Tick += (_, _) => { _reloadDebounce.Stop(); ReloadSettings(); };
 
+        SystemEvents.DisplaySettingsChanged += OnScreenChanged;
+        SystemEvents.UserPreferenceChanged  += OnUserPreferenceChanged;
+
         Apply(settings);
     }
 
@@ -49,9 +53,11 @@ public sealed class OverlayApp : ApplicationContext
 
         for (int i = 0; i < Overlays.Length; i++)
         {
-            var overlay = _open[i];
+            var  overlay = _open[i];
+            bool on      = settings.OverlayOn(Overlays[i].Key);
+            _overlayItems[i].Checked = on;
 
-            if (!Overlays[i].IsOn(settings))
+            if (!on)
             {
                 overlay?.Close();
                 _open[i] = null;
@@ -82,6 +88,15 @@ public sealed class OverlayApp : ApplicationContext
         };
 
         var menu = new ContextMenuStrip();
+        for (int i = 0; i < Overlays.Length; i++)
+        {
+            int index = i;
+            _overlayItems[i] = new ToolStripMenuItem(Overlays[i].Name);
+            _overlayItems[i].Click += (_, _) => ToggleOverlay(index);
+            menu.Items.Add(_overlayItems[i]);
+        }
+        menu.Items.Add(new ToolStripSeparator());
+
         menu.Items.Add("Open settings",      null, (_, _) => OpenSettingsFile());
         menu.Items.Add("Reload settings",    null, (_, _) => ReloadSettings());
         menu.Items.Add("Toggle stay on top", null, (_, _) => ToggleStayOnTop());
@@ -136,6 +151,32 @@ public sealed class OverlayApp : ApplicationContext
         item.Checked = IsStartWithWindowsOn();
     }
 
+    private void ToggleOverlay(int index)
+    {
+        try
+        {
+            Ini.SetValue(_settingsPath, "overlays", Overlays[index].Key, _overlayItems[index].Checked ? "false" : "true");
+            _reloadDebounce.Stop();
+            _reloadDebounce.Start();
+        }
+        catch (Exception ex)
+        {
+            Warn($"Couldn't change settings.ini:\n{ex.Message}");
+        }
+    }
+
+    private void OnScreenChanged(object? sender, EventArgs e)
+        => _ui.Post(_ =>
+        {
+            if (_exiting) return;
+            foreach (var overlay in _open) overlay?.Reposition();
+        }, null);
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category == UserPreferenceCategory.Desktop) OnScreenChanged(sender, e);
+    }
+
     private void OnSettingsFileChanged(object sender, FileSystemEventArgs e)
     {
         if (_exiting) return;
@@ -171,6 +212,8 @@ public sealed class OverlayApp : ApplicationContext
         if (_exiting) return;
         _exiting = true;
 
+        SystemEvents.DisplaySettingsChanged -= OnScreenChanged;
+        SystemEvents.UserPreferenceChanged  -= OnUserPreferenceChanged;
         _reloadDebounce.Stop();
         _reloadDebounce.Dispose();
         _settingsWatcher.EnableRaisingEvents = false;
