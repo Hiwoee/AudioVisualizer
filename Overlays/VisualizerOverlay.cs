@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Dsp;
@@ -12,17 +11,8 @@ using Windows.Storage.Streams;
 
 namespace AudioVisualizer;
 
-public sealed class VisualizerForm : Form
+public sealed class VisualizerOverlay : OverlayWindow
 {
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool SetWindowPos(
-        IntPtr hWnd, IntPtr hWndInsertAfter,
-        int x, int y, int cx, int cy, uint uFlags);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool SetLayeredWindowAttributes(
-        IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
-
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr CreateWaitableTimerExW(
         IntPtr attributes, string? name, uint flags, uint access);
@@ -37,23 +27,9 @@ public sealed class VisualizerForm : Form
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
 
-    private static readonly IntPtr HwndTopmost = new(-1);
-    private static readonly IntPtr HwndBottom  = new(1);
-
-    private const uint SwpNoSize       = 0x0001;
-    private const uint SwpNoMove       = 0x0002;
-    private const uint SwpNoActivate   = 0x0010;
-    private const int  WsExLayered     = 0x00080000;
-    private const int  WsExToolWindow  = 0x00000080;
-    private const int  WsExTransparent = 0x00000020;
-    private const uint LwaColorKey     = 0x00000001;
-
     private const uint TimerHighResolution = 0x00000002;
     private const uint TimerAllAccess      = 0x001F0003;
     private const uint WaitInfinite        = 0xFFFFFFFF;
-
-    private const string RunKeyPath   = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string RunValueName = "AudioVisualizer";
 
     private const int  FftSize           = 4096;
     private const long HideAfterPausedMs = 5000;
@@ -80,7 +56,7 @@ public sealed class VisualizerForm : Form
 
     private static Image? LoadIcon(string file)
     {
-        using var stream = typeof(VisualizerForm).Assembly.GetManifestResourceStream($"AudioVisualizer.icons.{file}");
+        using var stream = typeof(VisualizerOverlay).Assembly.GetManifestResourceStream($"AudioVisualizer.icons.{file}");
         if (stream is null) return null;
 
         using var source = Image.FromStream(stream);
@@ -92,9 +68,9 @@ public sealed class VisualizerForm : Form
         return icon;
     }
 
-    private float[] _smoothedLevels;
-    private float[] _peakLevels;
-    private float[] _rawTargets;
+    private float[] _smoothedLevels = [];
+    private float[] _peakLevels     = [];
+    private float[] _rawTargets     = [];
 
     private float _dynamicCeiling = 0.01f;
 
@@ -113,19 +89,13 @@ public sealed class VisualizerForm : Form
     private DateTime _anchorSetAt     = DateTime.MinValue;
     private const double SeekThresholdSeconds = 2.5;
 
-    private readonly string _settingsPath;
-
     private VisualizerSettings _settings;
-    private bool               _stayOnTop;
-    private SolidBrush         _barBrush;
+    private SolidBrush         _barBrush = new(Color.Empty);
 
     private WasapiLoopbackCapture?       _capture;
     private readonly MMDeviceEnumerator  _deviceEnumerator = new();
     private readonly DefaultDeviceWatcher _deviceWatcher;
 
-    private NotifyIcon?                         _trayIcon;
-    private readonly FileSystemWatcher          _settingsWatcher;
-    private readonly System.Windows.Forms.Timer _reloadDebounce = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer _mediaTimer;
     private long                                _frameInterval;
     private int                                 _framePending;
@@ -142,48 +112,10 @@ public sealed class VisualizerForm : Form
     private MediaSnapshot _media = MediaSnapshot.Empty;
     private bool          _isDisposed;
 
-    public VisualizerForm(VisualizerSettings settings, string settingsPath)
+    public VisualizerOverlay(AppSettings settings)
     {
-        _settings     = settings;
-        _settingsPath = settingsPath;
-        _stayOnTop    = _settings.Stayontop;
-        _barBrush     = new SolidBrush(_settings.BarColor);
-
-        DoubleBuffered = true;
-        SetStyle(
-            ControlStyles.OptimizedDoubleBuffer |
-            ControlStyles.AllPaintingInWmPaint  |
-            ControlStyles.UserPaint             |
-            ControlStyles.SupportsTransparentBackColor,
-            true);
-        UpdateStyles();
-
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar   = false;
-        StartPosition   = FormStartPosition.Manual;
-        TopMost         = true;
-        BackColor       = Color.Black;
-        TransparencyKey = BackColor;
-
-        ApplyWindowBounds();
-        ConfigureTrayIcon();
-
-        int n           = _settings.BarCount;
-        _smoothedLevels = new float[n];
-        _peakLevels     = new float[n];
-        _rawTargets     = new float[n];
-
-        HandleCreated += OnHandleCreated;
-
-        _settingsWatcher = new FileSystemWatcher(
-            Path.GetDirectoryName(_settingsPath)!,
-            Path.GetFileName(_settingsPath))
-        {
-            NotifyFilter        = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-            EnableRaisingEvents = true
-        };
-        _settingsWatcher.Changed += OnSettingsFileChanged;
-        _reloadDebounce.Tick += (_, _) => { _reloadDebounce.Stop(); ReloadSettings(); };
+        _settings = settings.Visualizer;
+        ApplySettings(settings);
 
         _deviceWatcher = new DefaultDeviceWatcher(() =>
         {
@@ -192,27 +124,35 @@ public sealed class VisualizerForm : Form
         _deviceEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
 
         SetupAudio();
-        SetupRenderTimer();
         new Thread(RenderLoop) { IsBackground = true, Name = "Render" }.Start();
-        ApplyStayOnTop();
 
         _mediaTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _mediaTimer.Tick += async (_, _) => await RefreshMediaAsync();
         _mediaTimer.Start();
     }
 
-    protected override CreateParams CreateParams
+    public override void ApplySettings(AppSettings settings)
     {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= WsExLayered | WsExToolWindow | WsExTransparent;
-            return cp;
-        }
-    }
+        var n = settings.Visualizer;
+        _settings = n;
 
-    protected override void OnPaintBackground(PaintEventArgs e)
-        => e.Graphics.Clear(BackColor);
+        _barBrush.Dispose();
+        _barBrush = new SolidBrush(settings.Color);
+
+        Array.Resize(ref _smoothedLevels, n.BarCount);
+        Array.Resize(ref _peakLevels,     n.BarCount);
+        Array.Resize(ref _rawTargets,     n.BarCount);
+
+        _dynamicCeiling  = 0.01f;
+        _marqueeActive   = false;
+        _marqueeOffset   = 0f;
+        _marqueeWait     = 0f;
+        _lastMarqueeText = "";
+
+        Place(n.Position, n.Width, n.Height);
+        SetupRenderTimer();
+        Invalidate();
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -475,87 +415,6 @@ public sealed class VisualizerForm : Form
         base.Dispose(disposing);
     }
 
-    private void ConfigureTrayIcon()
-    {
-        using Icon? extracted = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        _trayIcon = new NotifyIcon
-        {
-            Icon    = extracted is null ? SystemIcons.Application : (Icon)extracted.Clone(),
-            Visible = true,
-            Text    = "Audio Visualizer"
-        };
-
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Open settings",      null, (_, _) => OpenSettingsFile());
-        menu.Items.Add("Reload settings",    null, (_, _) => ReloadSettings());
-        menu.Items.Add("Toggle stay on top", null, (_, _) => ToggleStayOnTop());
-
-        var startWithWindows = new ToolStripMenuItem("Start with Windows") { Checked = IsStartWithWindowsOn() };
-        startWithWindows.Click += (_, _) => ToggleStartWithWindows(startWithWindows);
-        menu.Items.Add(startWithWindows);
-
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => Close());
-
-        _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => ToggleStayOnTop();
-    }
-
-    private void OpenSettingsFile()
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo(_settingsPath) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
-                $"Couldn't open settings.ini:\n{ex.Message}", ToolTipIcon.Warning);
-        }
-    }
-
-    private static string StartupCommand => $"\"{Environment.ProcessPath}\"";
-
-    private static bool IsStartWithWindowsOn()
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
-        return string.Equals(key?.GetValue(RunValueName) as string, StartupCommand, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void ToggleStartWithWindows(ToolStripMenuItem item)
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
-            if (IsStartWithWindowsOn()) key.DeleteValue(RunValueName, false);
-            else                        key.SetValue(RunValueName, StartupCommand);
-        }
-        catch (Exception ex)
-        {
-            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
-                $"Couldn't change Start with Windows:\n{ex.Message}", ToolTipIcon.Warning);
-        }
-        item.Checked = IsStartWithWindowsOn();
-    }
-
-    private void OnHandleCreated(object? sender, EventArgs e)
-    {
-        SetLayeredWindowAttributes(Handle, (uint)ColorTranslator.ToWin32(BackColor), 0, LwaColorKey);
-        ApplyStayOnTop();
-    }
-
-    private void ApplyWindowBounds()
-    {
-        var area   = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
-        int width  = Math.Max(100, _settings.Width);
-        int height = Math.Max(50,  _settings.Height);
-        Size = new Size(width, height);
-
-        Location = _settings.Position == "bottom-left"
-            ? new Point(area.Left,          area.Bottom - height)
-            : new Point(area.Right - width, area.Bottom - height);
-    }
-
     private void SetupAudio()
     {
         WasapiLoopbackCapture? capture = null;
@@ -727,61 +586,6 @@ public sealed class VisualizerForm : Form
         if (ReferenceEquals(snapshot, MediaSnapshot.Empty)) _mediaDuration = TimeSpan.Zero;
     }
 
-    private void OnSettingsFileChanged(object sender, FileSystemEventArgs e)
-    {
-        if (_isDisposed || !IsHandleCreated) return;
-        BeginInvoke(new Action(() => { _reloadDebounce.Stop(); _reloadDebounce.Start(); }));
-    }
-
-    private void ReloadSettings()
-    {
-        try
-        {
-            var n = new VisualizerSettings(_settingsPath);
-            _settings  = n;
-            _stayOnTop = n.Stayontop;
-
-            _barBrush.Dispose();
-            _barBrush = new SolidBrush(n.BarColor);
-
-            Array.Resize(ref _smoothedLevels, n.BarCount);
-            Array.Resize(ref _peakLevels,     n.BarCount);
-            Array.Resize(ref _rawTargets,      n.BarCount);
-
-            _dynamicCeiling  = 0.01f;
-            _marqueeActive   = false;
-            _marqueeOffset   = 0f;
-            _marqueeWait     = 0f;
-            _lastMarqueeText = "";
-
-            ApplyWindowBounds();
-            SetupRenderTimer();
-            ApplyStayOnTop();
-            Invalidate();
-        }
-        catch (Exception ex)
-        {
-            _trayIcon?.ShowBalloonTip(3000, "Audio Visualizer",
-                $"Couldn't reload settings.ini:\n{ex.Message}", ToolTipIcon.Warning);
-        }
-    }
-
-    private void ToggleStayOnTop()
-    {
-        _stayOnTop = !_stayOnTop;
-        ApplyStayOnTop();
-        Invalidate();
-    }
-
-    private void ApplyStayOnTop()
-    {
-        if (!IsHandleCreated) return;
-        SetWindowPos(Handle,
-            _stayOnTop ? HwndTopmost : HwndBottom,
-            0, 0, 0, 0,
-            SwpNoMove | SwpNoSize | SwpNoActivate);
-    }
-
     private void DisposeResources()
     {
         if (_isDisposed) return;
@@ -789,20 +593,10 @@ public sealed class VisualizerForm : Form
 
         _mediaTimer.Stop();
         _mediaTimer.Dispose();
-        _reloadDebounce.Dispose();
-        _settingsWatcher.EnableRaisingEvents = false;
-        _settingsWatcher.Dispose();
         _deviceEnumerator.UnregisterEndpointNotificationCallback(_deviceWatcher);
         _deviceEnumerator.Dispose();
         _capture?.StopRecording();
         _capture?.Dispose();
-
-        if (_trayIcon is not null)
-        {
-            _trayIcon.Visible = false;
-            _trayIcon.Dispose();
-            _trayIcon = null;
-        }
 
         _barBrush.Dispose();
         _mediaFont.Dispose();

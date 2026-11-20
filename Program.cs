@@ -11,10 +11,10 @@ internal static class Program
         string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.ini");
         EnsureDefaultSettingsFile(settingsPath);
 
-        VisualizerSettings settings;
+        AppSettings settings;
         try
         {
-            settings = new VisualizerSettings(settingsPath);
+            settings = new AppSettings(settingsPath);
         }
         catch (Exception ex)
         {
@@ -23,7 +23,7 @@ internal static class Program
             return;
         }
 
-        Application.Run(new VisualizerForm(settings, settingsPath));
+        Application.Run(new OverlayApp(settings, settingsPath));
     }
 
     private static void EnsureDefaultSettingsFile(string path)
@@ -31,6 +31,9 @@ internal static class Program
         if (File.Exists(path)) return;
         File.WriteAllLines(path, new[]
         {
+            "[overlays]",
+            "visualizer=true",
+            "",
             "[config]",
             "sensitivity=75",
             "fps=90",

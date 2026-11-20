@@ -1,62 +1,75 @@
-using System.Drawing;
-using System.IO;
 using IniParser;
 using IniParser.Model;
 
 namespace AudioVisualizer;
 
-public class VisualizerSettings
+public sealed class AppSettings
 {
-    public int    Fps         { get; private set; }
-    public int    BarCount     { get; private set; }
-    public float  Sensitivity  { get; private set; }
-    public int    Width        { get; private set; }
-    public int    Height       { get; private set; }
-    public int    Barspacing   { get; private set; }
-    public bool   Showpeakbars { get; private set; }
-    public bool   Showprogressbar { get; private set; }
-    public bool   Stayontop    { get; private set; }
+    public bool  Stayontop      { get; }
+    public bool  ShowVisualizer { get; }
+    public Color Color          { get; }
 
-    public string Position { get; private set; }
+    public VisualizerSettings Visualizer { get; }
 
-    public bool Mediainfo { get; private set; }
-    public bool Showtitle { get; private set; }
-    public bool Showsourceicon { get; private set; }
-
-    public Color BarColor { get; private set; }
-
-    public VisualizerSettings(string iniPath)
+    public AppSettings(string iniPath)
     {
         if (!File.Exists(iniPath))
             throw new FileNotFoundException("Could not find settings file.", iniPath);
 
         IniData data = new FileIniDataParser().ReadFile(iniPath);
 
-        Fps          = Math.Clamp(ReadInt  (data, "config", "fps",          90),   15, 240);
-        BarCount     = Math.Clamp(ReadInt  (data, "config", "bars",         150),  1, 1000);
-        Sensitivity  =            ReadFloat(data, "config", "sensitivity",  75f);
-        Width        = Math.Max  (ReadInt  (data, "config", "width",        550),  100);
-        Height       = Math.Max  (ReadInt  (data, "config", "height",       150),  50);
-        Barspacing   = Math.Max  (ReadInt  (data, "config", "barspacing",   0),    0);
-        Showpeakbars =            ReadBool (data, "config", "showpeakbars", true);
-        Stayontop    =            ReadBool (data, "config", "stayontop",    true);
+        Stayontop      = Ini.ReadBool(data, "config",   "stayontop",  true);
+        ShowVisualizer = Ini.ReadBool(data, "overlays", "visualizer", true);
 
-        Position = (RawValue(data, "config", "position") ?? "bottom-right").ToLowerInvariant();
+        byte r = Ini.ReadByte(data, "color", "r", 30);
+        byte g = Ini.ReadByte(data, "color", "g", 144);
+        byte b = Ini.ReadByte(data, "color", "b", 155);
+        byte a = Ini.ReadByte(data, "color", "a", 210);
+        Color = Color.FromArgb(a, r, g, b);
 
-        Mediainfo = ReadBool(data, "mediainfo", "mediainfo", true);
-        Showtitle = ReadBool(data, "mediainfo", "showtitle", true);
-        Showsourceicon = ReadBool(data, "mediainfo", "showsourceicon", true);
-        Showprogressbar = ReadBool(data, "mediainfo", "showprogressbar",
-                          ReadBool(data, "config", "showprogressbar", true));
-
-        byte r = ReadByte(data, "color", "r", 30);
-        byte g = ReadByte(data, "color", "g", 144);
-        byte b = ReadByte(data, "color", "b", 155);
-        byte a = ReadByte(data, "color", "a", 210);
-        BarColor = Color.FromArgb(a, r, g, b);
+        Visualizer = new VisualizerSettings(data);
     }
+}
 
-    private static string? RawValue(IniData data, string section, string key)
+public sealed class VisualizerSettings
+{
+    public int    Fps             { get; }
+    public int    BarCount        { get; }
+    public float  Sensitivity     { get; }
+    public int    Width           { get; }
+    public int    Height          { get; }
+    public int    Barspacing      { get; }
+    public bool   Showpeakbars    { get; }
+    public bool   Showprogressbar { get; }
+    public string Position        { get; }
+
+    public bool Mediainfo      { get; }
+    public bool Showtitle      { get; }
+    public bool Showsourceicon { get; }
+
+    public VisualizerSettings(IniData data)
+    {
+        Fps          = Math.Clamp(Ini.ReadInt  (data, "config", "fps",          90),  15, 240);
+        BarCount     = Math.Clamp(Ini.ReadInt  (data, "config", "bars",         150), 1, 1000);
+        Sensitivity  =            Ini.ReadFloat(data, "config", "sensitivity",  75f);
+        Width        = Math.Max  (Ini.ReadInt  (data, "config", "width",        550), 100);
+        Height       = Math.Max  (Ini.ReadInt  (data, "config", "height",       150), 50);
+        Barspacing   = Math.Max  (Ini.ReadInt  (data, "config", "barspacing",   0),   0);
+        Showpeakbars =            Ini.ReadBool (data, "config", "showpeakbars", true);
+
+        Position = (Ini.RawValue(data, "config", "position") ?? "bottom-right").ToLowerInvariant();
+
+        Mediainfo       = Ini.ReadBool(data, "mediainfo", "mediainfo",      true);
+        Showtitle       = Ini.ReadBool(data, "mediainfo", "showtitle",      true);
+        Showsourceicon  = Ini.ReadBool(data, "mediainfo", "showsourceicon", true);
+        Showprogressbar = Ini.ReadBool(data, "mediainfo", "showprogressbar",
+                          Ini.ReadBool(data, "config",    "showprogressbar", true));
+    }
+}
+
+internal static class Ini
+{
+    public static string? RawValue(IniData data, string section, string key)
     {
         var sec = data[section];
         if (sec is null) return null;
@@ -66,10 +79,10 @@ public class VisualizerSettings
         return null;
     }
 
-    private static int ReadInt(IniData data, string section, string key, int fallback)
+    public static int ReadInt(IniData data, string section, string key, int fallback)
         => int.TryParse(RawValue(data, section, key), out int v) ? v : fallback;
 
-    private static float ReadFloat(IniData data, string section, string key, float fallback)
+    public static float ReadFloat(IniData data, string section, string key, float fallback)
         => float.TryParse(
                RawValue(data, section, key),
                System.Globalization.NumberStyles.Float,
@@ -77,9 +90,9 @@ public class VisualizerSettings
                out float v)
            ? v : fallback;
 
-    private static bool ReadBool(IniData data, string section, string key, bool fallback)
+    public static bool ReadBool(IniData data, string section, string key, bool fallback)
         => bool.TryParse(RawValue(data, section, key), out bool v) ? v : fallback;
 
-    private static byte ReadByte(IniData data, string section, string key, byte fallback)
+    public static byte ReadByte(IniData data, string section, string key, byte fallback)
         => byte.TryParse(RawValue(data, section, key), out byte v) ? v : fallback;
 }
