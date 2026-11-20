@@ -33,6 +33,7 @@ internal static class Program
         {
             "[overlays]",
             "visualizer=true",
+            "testimage=false",
             "",
             "[config]",
             "sensitivity=75",

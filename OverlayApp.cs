@@ -9,9 +9,10 @@ public sealed class OverlayApp : ApplicationContext
     private const string RunKeyPath   = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "AudioVisualizer";
 
-    private static readonly (string Name, string Key, Func<AppSettings, OverlayWindow> Create)[] Overlays =
+    private static readonly (string Name, string Key, bool OnByDefault, Func<AppSettings, OverlayWindow> Create)[] Overlays =
     [
-        ("Audio visualizer", "visualizer", s => new VisualizerOverlay(s)),
+        ("Audio visualizer", "visualizer", true,  s => new VisualizerOverlay(s)),
+        ("Test image",       "testimage",  false, s => new TestImageOverlay(s)),
     ];
 
     private readonly OverlayWindow?[]     _open         = new OverlayWindow?[Overlays.Length];
@@ -54,7 +55,7 @@ public sealed class OverlayApp : ApplicationContext
         for (int i = 0; i < Overlays.Length; i++)
         {
             var  overlay = _open[i];
-            bool on      = settings.OverlayOn(Overlays[i].Key);
+            bool on      = settings.OverlayOn(Overlays[i].Key, Overlays[i].OnByDefault);
             _overlayItems[i].Checked = on;
 
             if (!on)

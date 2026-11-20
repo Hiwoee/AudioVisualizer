@@ -106,9 +106,7 @@ public sealed class VisualizerOverlay : OverlayWindow
     private bool _isPlaying;
     private long _lastPlayingTick;
 
-    private readonly Font  _mediaFont = new("Segoe UI", 10, FontStyle.Bold);
-    private readonly Brush _peakBrush = Brushes.White;
-    private readonly Brush _textBrush = Brushes.White;
+    private readonly Font _mediaFont = new("Segoe UI", 10, FontStyle.Bold);
 
     private MediaSnapshot _media = MediaSnapshot.Empty;
     private bool          _isDisposed;
@@ -150,6 +148,8 @@ public sealed class VisualizerOverlay : OverlayWindow
         _marqueeWait     = 0f;
         _lastMarqueeText = "";
 
+        if (!n.Mediainfo) SetMedia(MediaSnapshot.Empty);
+
         Place(n.Position, n.Width, n.Height);
         SetupRenderTimer();
         Redraw();
@@ -182,11 +182,11 @@ public sealed class VisualizerOverlay : OverlayWindow
             if (settings.Showpeakbars)
             {
                 float peakY = Math.Max(0, Height - _peakLevels[i] - 2);
-                g.FillRectangle(_peakBrush, x, peakY, w, 2);
+                g.FillRectangle(Brushes.White, x, peakY, w, 2);
             }
         }
 
-        if (!IsMediaShown) return;
+        if (!settings.Mediainfo || !IsMediaShown) return;
         DrawMediaInfo(g, settings);
         DrawProgressBar(g, settings);
     }
@@ -261,9 +261,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private void ApplyGaussianSmooth(int barCount, int radius, float sigma)
     {
-        Span<float> tmp = barCount <= 2048
-            ? stackalloc float[barCount]
-            : new float[barCount];
+        Span<float> tmp = stackalloc float[barCount];
 
         for (int i = 0; i < barCount; i++)
         {
@@ -329,8 +327,6 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private void DrawMediaInfo(Graphics g, VisualizerSettings settings)
     {
-        if (!settings.Mediainfo) return;
-
         var media = _media;
         if (string.IsNullOrWhiteSpace(media.Title)) return;
 
@@ -366,7 +362,7 @@ public sealed class VisualizerOverlay : OverlayWindow
             _marqueeActive = false;
             _marqueeOffset = 0f;
             _marqueeWait   = 0f;
-            g.DrawString(text, _mediaFont, _textBrush, textX, textY);
+            g.DrawString(text, _mediaFont, Brushes.White, textX, textY);
         }
         else
         {
@@ -382,7 +378,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
             var savedClip = g.Clip;
             g.SetClip(new RectangleF(textX, textY - 2, availableWidth, _mediaFont.Height + 4));
-            g.DrawString(text, _mediaFont, _textBrush, textX - _marqueeOffset, textY);
+            g.DrawString(text, _mediaFont, Brushes.White, textX - _marqueeOffset, textY);
             g.Clip = savedClip;
         }
     }
@@ -393,7 +389,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
         if (_mediaDuration.TotalSeconds <= 0 || _anchorSetAt == DateTime.MinValue) return;
 
-        TimeSpan current  = _isPlaying ? _positionAnchor + (DateTime.Now - _anchorSetAt) : _positionAnchor;
+        TimeSpan current  = _isPlaying ? _positionAnchor + (DateTime.UtcNow - _anchorSetAt) : _positionAnchor;
         double   fraction = Math.Clamp(current.TotalSeconds / _mediaDuration.TotalSeconds, 0.0, 1.0);
 
         int barW = (int)(Width * fraction);
@@ -512,7 +508,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private async Task RefreshMediaAsync()
     {
-        if (_isDisposed || _isRefreshingMedia) return;
+        if (_isDisposed || _isRefreshingMedia || !_settings.Mediainfo) return;
         _isRefreshingMedia = true;
         try
         {
@@ -550,17 +546,17 @@ public sealed class VisualizerOverlay : OverlayWindow
                 if (_anchorSetAt == DateTime.MinValue || !playing || !_isPlaying)
                 {
                     _positionAnchor = newPosition;
-                    _anchorSetAt    = DateTime.Now;
+                    _anchorSetAt    = DateTime.UtcNow;
                 }
                 else
                 {
-                    TimeSpan estimate = _positionAnchor + (DateTime.Now - _anchorSetAt);
+                    TimeSpan estimate = _positionAnchor + (DateTime.UtcNow - _anchorSetAt);
                     double   diffSecs = Math.Abs((newPosition - estimate).TotalSeconds);
 
                     if (diffSecs > SeekThresholdSeconds)
                     {
                         _positionAnchor = newPosition;
-                        _anchorSetAt    = DateTime.Now;
+                        _anchorSetAt    = DateTime.UtcNow;
                     }
                 }
 

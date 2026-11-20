@@ -30,7 +30,7 @@ public sealed class AppSettings
         Visualizer = new VisualizerSettings(data);
     }
 
-    public bool OverlayOn(string key) => Ini.ReadBool(_data, "overlays", key, true);
+    public bool OverlayOn(string key, bool fallback) => Ini.ReadBool(_data, "overlays", key, fallback);
 }
 
 public sealed class VisualizerSettings
