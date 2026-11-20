@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Dsp;
@@ -101,7 +100,9 @@ public sealed class VisualizerOverlay : OverlayWindow
     private int                                 _framePending;
 
     private GlobalSystemMediaTransportControlsSessionManager? _mediaManager;
-    private bool _isRefreshingMedia;
+    private bool    _isRefreshingMedia;
+    private string? _coverTrack;
+    private bool    _coverFailed;
     private bool _isPlaying;
     private long _lastPlayingTick;
 
@@ -511,7 +512,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private async Task RefreshMediaAsync()
     {
-        if (_isDisposed || _isRefreshingMedia || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
+        if (_isDisposed || _isRefreshingMedia) return;
         _isRefreshingMedia = true;
         try
         {
@@ -523,15 +524,17 @@ public sealed class VisualizerOverlay : OverlayWindow
             var props = await session.TryGetMediaPropertiesAsync();
             if (props is null) { SetMedia(MediaSnapshot.Empty); return; }
 
-            Image? albumArt = null;
-            if (props.Thumbnail is not null)
+            string track = $"{session.SourceAppUserModelId}\n{props.Title}\n{props.Artist}";
+            Image? albumArt;
+            if (track == _coverTrack && (_media.AlbumArt is not null || _coverFailed))
             {
-                using var stream = await props.Thumbnail.OpenReadAsync();
-                using var reader = new DataReader(stream);
-                var bytes = new byte[await reader.LoadAsync((uint)stream.Size)];
-                reader.ReadBytes(bytes);
-                using var temp = Image.FromStream(new MemoryStream(bytes));
-                albumArt = new Bitmap(temp);
+                albumArt = _media.AlbumArt;
+            }
+            else
+            {
+                _coverTrack  = track;
+                _coverFailed = false;
+                albumArt     = await LoadCoverAsync(props);
             }
 
             try
@@ -584,7 +587,25 @@ public sealed class VisualizerOverlay : OverlayWindow
         }
     }
 
-    [SupportedOSPlatform("windows10.0.17763")]
+    private async Task<Image?> LoadCoverAsync(GlobalSystemMediaTransportControlsSessionMediaProperties props)
+    {
+        if (props.Thumbnail is null) return null;
+        try
+        {
+            using var stream = await props.Thumbnail.OpenReadAsync();
+            using var reader = new DataReader(stream);
+            var bytes = new byte[await reader.LoadAsync((uint)stream.Size)];
+            reader.ReadBytes(bytes);
+            using var temp = Image.FromStream(new MemoryStream(bytes));
+            return new Bitmap(temp);
+        }
+        catch
+        {
+            _coverFailed = true;
+            return null;
+        }
+    }
+
     private static GlobalSystemMediaTransportControlsSession? FindPlayingSpotifySession(
         GlobalSystemMediaTransportControlsSessionManager manager)
     {
@@ -598,9 +619,11 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private void SetMedia(MediaSnapshot snapshot)
     {
-        _media.AlbumArt?.Dispose();
+        if (!ReferenceEquals(_media.AlbumArt, snapshot.AlbumArt)) _media.AlbumArt?.Dispose();
         _media = snapshot;
-        if (ReferenceEquals(snapshot, MediaSnapshot.Empty)) _mediaDuration = TimeSpan.Zero;
+        if (!ReferenceEquals(snapshot, MediaSnapshot.Empty)) return;
+        _mediaDuration = TimeSpan.Zero;
+        _coverTrack    = null;
     }
 
     private void DisposeResources()
