@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
@@ -31,7 +32,8 @@ public sealed class VisualizerOverlay : OverlayWindow
     private const uint WaitInfinite        = 0xFFFFFFFF;
 
     private const int  FftSize           = 4096;
-    private const long HideAfterPausedMs = 5000;
+    private const long  HideAfterPausedMs = 5000;
+    private const float MediaFadeMs       = 300f;
 
     private readonly float[]   _fftBuffer  = new float[FftSize];
     private readonly Complex[] _fftComplex = new Complex[FftSize];
@@ -106,10 +108,16 @@ public sealed class VisualizerOverlay : OverlayWindow
     private bool _isPlaying;
     private long _lastPlayingTick;
 
+    private float _mediaFade;
+    private long  _mediaFadeTick;
+
     private readonly Font _mediaFont = new("Segoe UI", 10, FontStyle.Bold);
 
-    private MediaSnapshot _media = MediaSnapshot.Empty;
-    private bool          _isDisposed;
+    private MediaSnapshot  _media = MediaSnapshot.Empty;
+    private MediaSnapshot? _previousMedia;
+    private float          _previousMarqueeOffset;
+    private float          _switchFade = 1f;
+    private bool           _isDisposed;
 
     public VisualizerOverlay(AppSettings settings)
     {
@@ -186,9 +194,44 @@ public sealed class VisualizerOverlay : OverlayWindow
             }
         }
 
-        if (!settings.Mediainfo || !IsMediaShown) return;
-        DrawMediaInfo(g, settings);
-        DrawProgressBar(g, settings);
+        UpdateMediaFade(settings.Mediainfo && IsMediaShown);
+        if (_mediaFade <= 0f) return;
+
+        if (_previousMedia is not null)
+            DrawMediaLayer(g, settings, _previousMedia, _mediaFade * (1f - _switchFade), current: false);
+        DrawMediaLayer(g, settings, _media, _mediaFade * _switchFade, current: true);
+    }
+
+    private void DrawMediaLayer(Graphics g, VisualizerSettings settings, MediaSnapshot media, float opacity, bool current)
+    {
+        if (opacity <= 0f) return;
+
+        using var text = new SolidBrush(Color.FromArgb((int)(opacity * 255), Color.White));
+        using var fade = opacity < 1f ? new ImageAttributes() : null;
+        fade?.SetColorMatrix(new ColorMatrix { Matrix33 = opacity });
+
+        DrawMediaInfo(g, settings, media, text, fade, current);
+        if (current) DrawProgressBar(g, settings, text);
+    }
+
+    private void UpdateMediaFade(bool shown)
+    {
+        long  now  = Environment.TickCount64;
+        float step = Math.Min(now - _mediaFadeTick, 50) / MediaFadeMs;
+        _mediaFadeTick = now;
+        _mediaFade     = Math.Clamp(_mediaFade + (shown ? step : -step), 0f, 1f);
+
+        if (_previousMedia is null) return;
+        _switchFade = Math.Min(1f, _switchFade + step);
+        if (_switchFade >= 1f) DropPreviousMedia();
+    }
+
+    private bool IsMediaFading => _mediaFade is > 0f and < 1f || _previousMedia is not null;
+
+    private static void DrawImage(Graphics g, Image image, Rectangle dest, ImageAttributes? fade)
+    {
+        if (fade is null) g.DrawImage(image, dest);
+        else              g.DrawImage(image, dest, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, fade);
     }
 
     private static float HzToMel(float hz) => 2595f * MathF.Log10(1f + hz / 700f);
@@ -325,9 +368,8 @@ public sealed class VisualizerOverlay : OverlayWindow
         }
     }
 
-    private void DrawMediaInfo(Graphics g, VisualizerSettings settings)
+    private void DrawMediaInfo(Graphics g, VisualizerSettings settings, MediaSnapshot media, Brush text, ImageAttributes? fade, bool current)
     {
-        var media = _media;
         if (string.IsNullOrWhiteSpace(media.Title)) return;
 
         const int margin  = 10;
@@ -337,38 +379,48 @@ public sealed class VisualizerOverlay : OverlayWindow
 
         if (media.AlbumArt is not null)
         {
-            g.DrawImage(media.AlbumArt, new Rectangle(textX, Height - 80, artSize, artSize));
+            DrawImage(g, media.AlbumArt, new Rectangle(textX, Height - 80, artSize, artSize), fade);
             textX += artSize + 10;
         }
 
         if (settings.Showsourceicon && SpotifyIcon is not null &&
             media.SourceApp?.Contains("Spotify", StringComparison.OrdinalIgnoreCase) == true)
         {
-            g.DrawImage(SpotifyIcon, textX, textY + (_mediaFont.Height - SourceIconSize) / 2, SourceIconSize, SourceIconSize);
+            DrawImage(g, SpotifyIcon, new Rectangle(textX, textY + (_mediaFont.Height - SourceIconSize) / 2, SourceIconSize, SourceIconSize), fade);
             textX += SourceIconSize + 6;
         }
 
         if (!settings.Showtitle) return;
 
-        string text          = string.IsNullOrWhiteSpace(media.Artist)
+        string title         = string.IsNullOrWhiteSpace(media.Artist)
             ? media.Title!
             : $"{media.Title} - {media.Artist}";
         int   availableWidth = Math.Max(50, Width - textX - margin);
-        float textWidth      = g.MeasureString(text, _mediaFont).Width;
+        float textWidth      = g.MeasureString(title, _mediaFont).Width;
+        var   titleArea      = new RectangleF(textX, textY - 2, availableWidth, _mediaFont.Height + 4);
+
+        if (!current)
+        {
+            var clip = g.Clip;
+            g.SetClip(titleArea);
+            g.DrawString(title, _mediaFont, text, textX - _previousMarqueeOffset, textY);
+            g.Clip = clip;
+            return;
+        }
 
         if (textWidth <= availableWidth)
         {
-            if (_lastMarqueeText != text) _lastMarqueeText = text;
+            if (_lastMarqueeText != title) _lastMarqueeText = title;
             _marqueeActive = false;
             _marqueeOffset = 0f;
             _marqueeWait   = 0f;
-            g.DrawString(text, _mediaFont, Brushes.White, textX, textY);
+            g.DrawString(title, _mediaFont, text, textX, textY);
         }
         else
         {
-            if (text != _lastMarqueeText)
+            if (title != _lastMarqueeText)
             {
-                _lastMarqueeText = text;
+                _lastMarqueeText = title;
                 _marqueeOffset   = 0f;
                 _marqueeWait     = 0f;
             }
@@ -377,13 +429,13 @@ public sealed class VisualizerOverlay : OverlayWindow
             _marqueeFullWidth = textWidth;
 
             var savedClip = g.Clip;
-            g.SetClip(new RectangleF(textX, textY - 2, availableWidth, _mediaFont.Height + 4));
-            g.DrawString(text, _mediaFont, Brushes.White, textX - _marqueeOffset, textY);
+            g.SetClip(titleArea);
+            g.DrawString(title, _mediaFont, text, textX - _marqueeOffset, textY);
             g.Clip = savedClip;
         }
     }
 
-    private void DrawProgressBar(Graphics g, VisualizerSettings settings)
+    private void DrawProgressBar(Graphics g, VisualizerSettings settings, Brush bar)
     {
         if (!settings.Showprogressbar) return;
 
@@ -395,7 +447,7 @@ public sealed class VisualizerOverlay : OverlayWindow
         int barW = (int)(Width * fraction);
         if (barW <= 0) return;
 
-        g.FillRectangle(Brushes.White, 0, Height - 3, barW, 3);
+        g.FillRectangle(bar, 0, Height - 3, barW, 3);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -489,7 +541,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
         bool silent = Environment.TickCount64 - _lastAudioTick > 200;
         if (silent) Array.Clear(_fftBuffer);
-        if (silent && IsSettled() && !(IsMediaShown && _marqueeActive)) return;
+        if (silent && IsSettled() && !(IsMediaShown && _marqueeActive) && !IsMediaFading) return;
 
         ProcessSpectrum(_settings);
         UpdateMarquee();
@@ -615,11 +667,35 @@ public sealed class VisualizerOverlay : OverlayWindow
 
     private void SetMedia(MediaSnapshot snapshot)
     {
-        if (!ReferenceEquals(_media.AlbumArt, snapshot.AlbumArt)) _media.AlbumArt?.Dispose();
+        bool empty    = ReferenceEquals(snapshot, MediaSnapshot.Empty);
+        bool newTrack = !empty && _mediaFade > 0f && !string.IsNullOrWhiteSpace(_media.Title) &&
+                        (snapshot.Title, snapshot.Artist, snapshot.SourceApp) != (_media.Title, _media.Artist, _media.SourceApp);
+
+        if (newTrack)
+        {
+            DropPreviousMedia();
+            _previousMedia         = _media;
+            _previousMarqueeOffset = _marqueeActive ? _marqueeOffset : 0f;
+            _switchFade            = 0f;
+        }
+        else if (!ReferenceEquals(_media.AlbumArt, snapshot.AlbumArt))
+        {
+            _media.AlbumArt?.Dispose();
+        }
+
         _media = snapshot;
-        if (!ReferenceEquals(snapshot, MediaSnapshot.Empty)) return;
+        if (!empty) return;
+        DropPreviousMedia();
         _mediaDuration = TimeSpan.Zero;
         _coverTrack    = null;
+    }
+
+    private void DropPreviousMedia()
+    {
+        if (_previousMedia is not null && !ReferenceEquals(_previousMedia.AlbumArt, _media.AlbumArt))
+            _previousMedia.AlbumArt?.Dispose();
+        _previousMedia = null;
+        _switchFade    = 1f;
     }
 
     private void DisposeResources()
@@ -637,6 +713,7 @@ public sealed class VisualizerOverlay : OverlayWindow
         _barBrush.Dispose();
         _mediaFont.Dispose();
 
+        DropPreviousMedia();
         _media.AlbumArt?.Dispose();
         _media = MediaSnapshot.Empty;
     }

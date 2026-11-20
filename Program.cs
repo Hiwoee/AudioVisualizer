@@ -7,6 +7,7 @@ internal static class Program
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        Application.SetColorMode(SystemColorMode.System);
 
         string settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.ini");
         EnsureDefaultSettingsFile(settingsPath);
