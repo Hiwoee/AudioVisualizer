@@ -46,6 +46,7 @@ internal static class Program
             "showpeakbars=true",
             "stayontop=true",
             "position=bottom-right",
+            "monitor=0",
             "",
             "[mediainfo]",
             "mediainfo=true",

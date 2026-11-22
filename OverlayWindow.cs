@@ -68,8 +68,17 @@ public abstract class OverlayWindow : Form
     private const uint UlwAlpha        = 0x00000002;
     private const byte AcSrcAlpha      = 0x01;
 
+    // for now till i make it so you can drag them where you want (still not to make stuff like audio visualizer actually flip and such)
+    private static readonly string[] Positions =
+    [
+        "top-left",    "top",    "top-right",
+        "left",        "center", "right",
+        "bottom-left", "bottom", "bottom-right",
+    ];
+
     private bool    _stayOnTop;
     private string  _position = "";
+    private int     _monitor;
     private IntPtr  _surfaceDc;
     private IntPtr  _surfaceDib;
     private IntPtr  _surfaceOld;
@@ -113,19 +122,29 @@ public abstract class OverlayWindow : Form
 
     public void Reposition()
     {
-        Place(_position, Width, Height);
+        Place(_position, Width, Height, _monitor);
         Redraw();
     }
 
-    protected void Place(string position, int width, int height)
+    protected void Place(string position, int width, int height, int monitor = 0)
     {
         _position = position;
-        var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
+        _monitor  = monitor;
+
+        if (!Positions.Contains(position)) position = "bottom-right";
+
+        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ThenBy(s => s.Bounds.Top).ToArray();
+        var screen  = monitor >= 1 && monitor <= screens.Length ? screens[monitor - 1] : Screen.PrimaryScreen ?? screens[0];
+        var area    = screen.WorkingArea;
         Size = new Size(width, height);
 
-        Location = position == "bottom-left"
-            ? new Point(area.Left,          area.Bottom - height)
-            : new Point(area.Right - width, area.Bottom - height);
+        int x = position.EndsWith("left")    ? area.Left
+              : position.EndsWith("right")   ? area.Right - width
+              :                                area.Left + (area.Width - width) / 2;
+        int y = position.StartsWith("top")    ? area.Top
+              : position.StartsWith("bottom") ? area.Bottom - height
+              :                                 area.Top + (area.Height - height) / 2;
+        Location = new Point(x, y);
     }
 
     protected void Redraw()

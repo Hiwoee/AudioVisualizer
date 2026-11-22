@@ -158,7 +158,7 @@ public sealed class VisualizerOverlay : OverlayWindow
 
         if (!n.Mediainfo) SetMedia(MediaSnapshot.Empty);
 
-        Place(n.Position, n.Width, n.Height);
+        Place(n.Position, n.Width, n.Height, n.Monitor);
         SetupRenderTimer();
         Redraw();
     }

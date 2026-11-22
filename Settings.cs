@@ -44,6 +44,7 @@ public sealed class VisualizerSettings
     public bool   Showpeakbars    { get; }
     public bool   Showprogressbar { get; }
     public string Position        { get; }
+    public int    Monitor         { get; }
 
     public bool Mediainfo      { get; }
     public bool Showtitle      { get; }
@@ -60,6 +61,7 @@ public sealed class VisualizerSettings
         Showpeakbars =            Ini.ReadBool (data, "config", "showpeakbars", true);
 
         Position = (Ini.RawValue(data, "config", "position") ?? "bottom-right").ToLowerInvariant();
+        Monitor  = Math.Max(Ini.ReadInt(data, "config", "monitor", 0), 0);
 
         Mediainfo       = Ini.ReadBool(data, "mediainfo", "mediainfo",      true);
         Showtitle       = Ini.ReadBool(data, "mediainfo", "showtitle",      true);
