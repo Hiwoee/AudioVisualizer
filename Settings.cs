@@ -1,11 +1,8 @@
-using IniParser;
-using IniParser.Model;
-
 namespace AudioVisualizer;
 
 public sealed class AppSettings
 {
-    private readonly IniData _data;
+    private readonly IniFile _data;
 
     public bool  Stayontop { get; }
     public Color Color     { get; }
@@ -17,7 +14,7 @@ public sealed class AppSettings
         if (!File.Exists(iniPath))
             throw new FileNotFoundException("Could not find settings file.", iniPath);
 
-        IniData data = _data = new FileIniDataParser().ReadFile(iniPath);
+        IniFile data = _data = new IniFile(iniPath);
 
         Stayontop = Ini.ReadBool(data, "config", "stayontop", true);
 
@@ -50,7 +47,7 @@ public sealed class VisualizerSettings
     public bool Showtitle      { get; }
     public bool Showsourceicon { get; }
 
-    public VisualizerSettings(IniData data)
+    public VisualizerSettings(IniFile data)
     {
         Fps          = Math.Clamp(Ini.ReadInt  (data, "config", "fps",          90),  15, 240);
         BarCount     = Math.Clamp(Ini.ReadInt  (data, "config", "bars",         150), 1, 1000);
@@ -73,20 +70,12 @@ public sealed class VisualizerSettings
 
 internal static class Ini
 {
-    public static string? RawValue(IniData data, string section, string key)
-    {
-        var sec = data[section];
-        if (sec is null) return null;
-        foreach (var kv in sec)
-            if (string.Equals(kv.KeyName.Trim(), key.Trim(), StringComparison.OrdinalIgnoreCase))
-                return kv.Value?.Trim();
-        return null;
-    }
+    public static string? RawValue(IniFile data, string section, string key) => data[section, key];
 
-    public static int ReadInt(IniData data, string section, string key, int fallback)
+    public static int ReadInt(IniFile data, string section, string key, int fallback)
         => int.TryParse(RawValue(data, section, key), out int v) ? v : fallback;
 
-    public static float ReadFloat(IniData data, string section, string key, float fallback)
+    public static float ReadFloat(IniFile data, string section, string key, float fallback)
         => float.TryParse(
                RawValue(data, section, key),
                System.Globalization.NumberStyles.Float,
@@ -94,10 +83,10 @@ internal static class Ini
                out float v)
            ? v : fallback;
 
-    public static bool ReadBool(IniData data, string section, string key, bool fallback)
+    public static bool ReadBool(IniFile data, string section, string key, bool fallback)
         => bool.TryParse(RawValue(data, section, key), out bool v) ? v : fallback;
 
-    public static byte ReadByte(IniData data, string section, string key, byte fallback)
+    public static byte ReadByte(IniFile data, string section, string key, byte fallback)
         => byte.TryParse(RawValue(data, section, key), out byte v) ? v : fallback;
 
     public static void SetValue(string path, string section, string key, string value)
@@ -132,4 +121,34 @@ internal static class Ini
 
         File.WriteAllLines(path, lines);
     }
+}
+
+public sealed class IniFile
+{
+    private readonly Dictionary<string, Dictionary<string, string>> _sections = new(StringComparer.OrdinalIgnoreCase);
+
+    public IniFile(string path)
+    {
+        Dictionary<string, string>? section = null;
+        foreach (string raw in File.ReadLines(path))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0 || line[0] is ';' or '#') continue;
+
+            if (line[0] == '[' && line[^1] == ']')
+            {
+                string name = line[1..^1].Trim();
+                if (!_sections.TryGetValue(name, out section))
+                    _sections[name] = section = new(StringComparer.OrdinalIgnoreCase);
+                continue;
+            }
+
+            int equals = line.IndexOf('=');
+            if (section is null || equals <= 0) continue;
+            section[line[..equals].Trim()] = line[(equals + 1)..].Trim();
+        }
+    }
+
+    public string? this[string section, string key]
+        => _sections.TryGetValue(section, out var keys) && keys.TryGetValue(key.Trim(), out var value) ? value : null;
 }
