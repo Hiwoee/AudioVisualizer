@@ -36,6 +36,15 @@ public abstract class OverlayWindow : Form
         int x, int y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int RegisterWindowMessage(string lpString);
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UpdateLayeredWindow(
         IntPtr hwnd, IntPtr hdcDst, ref Point pptDst, ref Size psize,
         IntPtr hdcSrc, ref Point pptSrc, uint crKey, ref BlendFunction pblend, uint dwFlags);
@@ -67,6 +76,9 @@ public abstract class OverlayWindow : Form
     private const int  WsExTransparent = 0x00000020;
     private const uint UlwAlpha        = 0x00000002;
     private const byte AcSrcAlpha      = 0x01;
+    private const int  GwlpHwndParent  = -8;
+
+    private static readonly int TaskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
     // for now till i make it so you can drag them where you want (still not to make stuff like audio visualizer actually flip and such)
     private static readonly string[] Positions =
@@ -211,9 +223,16 @@ public abstract class OverlayWindow : Form
         }
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == TaskbarCreated) ApplyStayOnTop();
+        base.WndProc(ref m);
+    }
+
     private void ApplyStayOnTop()
     {
         if (!IsHandleCreated) return;
+        SetWindowLongPtr(Handle, GwlpHwndParent, _stayOnTop ? IntPtr.Zero : FindWindow("Progman", null));
         SetWindowPos(Handle,
             _stayOnTop ? HwndTopmost : HwndBottom,
             0, 0, 0, 0,

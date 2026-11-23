@@ -81,6 +81,12 @@ public sealed class VisualizerOverlay : OverlayWindow
     private bool   _marqueeActive;
     private float  _marqueeFullWidth;
 
+    private const float Fps     = 64f;
+    private const float MaxFrameStep = 6f;
+
+    private float _frameStep = 1f;
+    private long  _lastFrameTime;
+
     private const float MarqueeSpeedPxPerFrame = 0.5f;
     private const float MarqueeInitialWait     = 90f;
     private const float MarqueeLoopGap         = 60f;
@@ -330,26 +336,29 @@ public sealed class VisualizerOverlay : OverlayWindow
             frameMax = Math.Max(frameMax, _rawTargets[i]);
 
         _dynamicCeiling = frameMax > _dynamicCeiling
-            ? Lerp(_dynamicCeiling, frameMax, 0.18f)
-            : Lerp(_dynamicCeiling, frameMax, 0.04f);
+            ? Lerp(_dynamicCeiling, frameMax, PerFrame(0.18f))
+            : Lerp(_dynamicCeiling, frameMax, PerFrame(0.04f));
         _dynamicCeiling = Math.Max(_dynamicCeiling, 0.01f);
 
-        float scale = (settings.Sensitivity / 100f) / _dynamicCeiling;
+        float scale     = (settings.Sensitivity / 100f) / _dynamicCeiling;
+        float rise      = PerFrame(0.8f);
+        float fall      = PerFrame(0.06f);
+        float peakDecay = MathF.Pow(0.96f, _frameStep);
 
         for (int i = 0; i < barCount; i++)
         {
             float target = Math.Clamp(_rawTargets[i] * scale, 0f, 1f);
 
             _smoothedLevels[i] = _smoothedLevels[i] < target
-                ? Lerp(_smoothedLevels[i], target, 0.8f)
-                : Lerp(_smoothedLevels[i], target, 0.06f);
+                ? Lerp(_smoothedLevels[i], target, rise)
+                : Lerp(_smoothedLevels[i], target, fall);
 
             float barHeight = _smoothedLevels[i] * Height;
 
             if (barHeight > _peakLevels[i])
                 _peakLevels[i] = barHeight;
             else
-                _peakLevels[i] = Math.Max(0f, _peakLevels[i] * 0.96f);
+                _peakLevels[i] = Math.Max(0f, _peakLevels[i] * peakDecay);
         }
     }
 
@@ -357,9 +366,9 @@ public sealed class VisualizerOverlay : OverlayWindow
     {
         if (!_marqueeActive) return;
 
-        if (_marqueeWait < MarqueeInitialWait) { _marqueeWait++; return; }
+        if (_marqueeWait < MarqueeInitialWait) { _marqueeWait += _frameStep; return; }
 
-        _marqueeOffset += MarqueeSpeedPxPerFrame;
+        _marqueeOffset += MarqueeSpeedPxPerFrame * _frameStep;
 
         if (_marqueeOffset >= _marqueeFullWidth + MarqueeLoopGap)
         {
@@ -543,6 +552,10 @@ public sealed class VisualizerOverlay : OverlayWindow
         if (silent) Array.Clear(_fftBuffer);
         if (silent && IsSettled() && !(IsMediaShown && _marqueeActive) && !IsMediaFading) return;
 
+        long now = Stopwatch.GetTimestamp();
+        _frameStep     = Math.Clamp((now - _lastFrameTime) * Fps / Stopwatch.Frequency, 0f, MaxFrameStep);
+        _lastFrameTime = now;
+
         ProcessSpectrum(_settings);
         UpdateMarquee();
         Redraw();
@@ -719,6 +732,8 @@ public sealed class VisualizerOverlay : OverlayWindow
     }
 
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
+    private float PerFrame(float share) => 1f - MathF.Pow(1f - share, _frameStep);
 
     private sealed record MediaSnapshot(string? Title, string? Artist, string? SourceApp, Image? AlbumArt)
     {

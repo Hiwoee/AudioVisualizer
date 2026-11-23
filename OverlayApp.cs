@@ -17,6 +17,7 @@ public sealed class OverlayApp : ApplicationContext
 
     private readonly OverlayWindow?[]     _open         = new OverlayWindow?[Overlays.Length];
     private readonly ToolStripMenuItem[]  _overlayItems = new ToolStripMenuItem[Overlays.Length];
+    private readonly ToolStripMenuItem    _stayOnTopItem = new("Stay on top");
 
     private readonly string                     _settingsPath;
     private readonly SynchronizationContext     _ui = new WindowsFormsSynchronizationContext();
@@ -50,7 +51,8 @@ public sealed class OverlayApp : ApplicationContext
 
     private void Apply(AppSettings settings)
     {
-        _stayOnTop = settings.Stayontop;
+        _stayOnTop             = settings.Stayontop;
+        _stayOnTopItem.Checked = _stayOnTop;
 
         for (int i = 0; i < Overlays.Length; i++)
         {
@@ -100,7 +102,8 @@ public sealed class OverlayApp : ApplicationContext
 
         menu.Items.Add("Open settings",      null, (_, _) => OpenSettingsFile());
         menu.Items.Add("Reload settings",    null, (_, _) => ReloadSettings());
-        menu.Items.Add("Toggle stay on top", null, (_, _) => ToggleStayOnTop());
+        _stayOnTopItem.Click += (_, _) => ToggleStayOnTop();
+        menu.Items.Add(_stayOnTopItem);
 
         var startWithWindows = new ToolStripMenuItem("Start with Windows") { Checked = IsStartWithWindowsOn() };
         startWithWindows.Click += (_, _) => ToggleStartWithWindows(startWithWindows);
@@ -204,7 +207,8 @@ public sealed class OverlayApp : ApplicationContext
 
     private void ToggleStayOnTop()
     {
-        _stayOnTop = !_stayOnTop;
+        _stayOnTop             = !_stayOnTop;
+        _stayOnTopItem.Checked = _stayOnTop;
         foreach (var overlay in _open) overlay?.SetStayOnTop(_stayOnTop);
     }
 
